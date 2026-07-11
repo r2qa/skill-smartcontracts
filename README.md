@@ -26,7 +26,7 @@ bash ~/.claude/skills/skill-smartcontracts/tooling/bootstrap.sh
 
 This installs solc-select + solc versions (+ the TRON `tv_` fork), Foundry, Slither, Aderyn, Semgrep + Decurity rules, **heimdall** (decompiler for unverified contracts), Mythril, Echidna/Medusa, TronBox, panoramix. Idempotent — safe to re-run.
 
-**API keys (read-only rate-limit relief + verified-source fetch).** The bootstrap creates an empty template at `~/.config/fearsoff/audit.env`. Put your own **read-only** TronGrid + TronScan keys there and source it from `~/.zshenv`:
+**API keys (read-only rate-limit relief + verified-source fetch).** Config template lives in the repo: [`audit.env.example`](audit.env.example). `tooling/bootstrap.sh` copies it to `~/.config/fearsoff/audit.env` for you (or `cp audit.env.example ~/.config/fearsoff/audit.env`). Fill in your own **read-only** TronGrid + TronScan keys and source it from `~/.zshenv`:
 
 ```sh
 # ~/.config/fearsoff/audit.env
@@ -53,6 +53,7 @@ The repo ships **no keys** — everyone uses their own. `.zshenv` (not `.zshrc`)
 | `tooling/bootstrap.sh` | One-shot workstation setup (compilers, analyzers, fuzzers, decompiler, TronBox, API-key template). | So the skill's "tool absent → install it" policy actually holds. |
 | `tooling/get-source.sh` | Fetch a TRON contract's **verified source** (+ exact compiler settings + ABI) from TronScan's `POST /api/solidity/contract/info`, attest it against the on-chain runtime (`keccak256(runtime) == smart_contract.code_hash`), resolve **proxies** to their implementation, best-effort **recompile-match**, and cache by `code_hash`. Falls back to heimdall decompile when unverified. | The source-acquisition backbone. Makes reviews independent of trusting an explorer's "verified" badge. |
 | `tooling/README.md` | Toolchain reference. | — |
+| `audit.env.example` | Template for the read-only API config (`TRONGRID_API_KEY` / `TRONSCAN_API_KEY` + endpoints). Copy to `~/.config/fearsoff/audit.env`, fill, source from `~/.zshenv`. | Documents exactly which keys the tooling needs; keys themselves are never committed (`.gitignore`). |
 
 ### How the skill works (the 9 gates)
 

@@ -5,8 +5,9 @@
 .idea/
 .vscode/
 
-# never commit secrets or per-user config
+# never commit secrets or per-user config (the FILLED-IN env), but DO track the template
 audit.env
+!audit.env.example
 *.key
 .env
 

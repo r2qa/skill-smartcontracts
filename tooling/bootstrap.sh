@@ -298,24 +298,24 @@ have medusa && ok "medusa $(medusa --version 2>/dev/null | head -1)"
 log "[16/16] TronGrid / Tronscan API keys (read-only rate-limit relief)"
 # =============================================================================
 if [ ! -f "$ENV_FILE" ]; then
-  cat > "$ENV_FILE" <<'EOF'
-# FEARSOFF audit workstation — API keys (read-only usage; NEVER commit this file)
-# TronGrid: create a key at https://www.trongrid.io -> Dashboard -> API Keys.
-#   Sent as HTTP header:  TRON-PRO-API-KEY: $TRONGRID_API_KEY
-#   With key: 15 QPS within daily quota; without: dynamic throttling + 403 bans.
+  # prefer the committed template (single source of truth); fall back to inline
+  EXAMPLE="$(cd "$(dirname "$0")/.." 2>/dev/null && pwd)/audit.env.example"
+  if [ -f "$EXAMPLE" ]; then
+    cp "$EXAMPLE" "$ENV_FILE"
+  else
+    cat > "$ENV_FILE" <<'EOF'
+# reviewing-smart-contracts — API keys (read-only usage; NEVER commit this file)
+# TronGrid: https://www.trongrid.io -> Dashboard -> API Keys.  Header: TRON-PRO-API-KEY
 export TRONGRID_API_KEY=""
-# Tronscan: create a key at https://tronscan.org/#/developer/api (API Keys page).
-#   Sent as HTTP header:  TRON-PRO-API-KEY: $TRONSCAN_API_KEY
-#   Since 2025-08-31 keyless Tronscan requests are unreliable/blocked.
+# TronScan: https://tronscan.org/#/myaccount/apiKeys  (verified-source fetch; keyless is stripped since 2025-08)
 export TRONSCAN_API_KEY=""
-# Endpoints (mainnet / nile testnet / shasta testnet):
 export TRONGRID_MAINNET="https://api.trongrid.io"
 export TRONGRID_NILE="https://nile.trongrid.io"
 export TRONGRID_SHASTA="https://api.shasta.trongrid.io"
 export TRONSCAN_API="https://apilist.tronscanapi.com"
-# panoramix needs a web3 RPC to fetch bytecode by address (any EVM RPC):
 export WEB3_PROVIDER_URI=""
 EOF
+  fi
   chmod 600 "$ENV_FILE"
   ok "wrote $ENV_FILE (fill in your keys, chmod 600 applied)"
 else
