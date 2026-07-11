@@ -1,0 +1,18 @@
+# OS / editor cruft
+.DS_Store
+*.swp
+*~
+.idea/
+.vscode/
+
+# never commit secrets or per-user config
+audit.env
+*.key
+.env
+
+# stray audit artifacts (this repo holds the skill, not review output)
+findings/
+out/
+cache/
+broadcast/
+*.log
