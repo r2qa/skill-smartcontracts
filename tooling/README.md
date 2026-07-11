@@ -17,7 +17,7 @@ This table is the contract between `bootstrap.sh` and `SKILL.md`: **every tool i
 | **TRON solc fork** (`tv_` / tron-solc) | 5 | tronprotocol/solidity — TVM compiler | **Byte-accurate TVM compilation/verification** (gate 1). Required for `get-source.sh` recompile-match to reach **FULL-MATCH** (vanilla solc ≠ TVM bytecode). *(Currently only 0.8.27 — see TODO.)* |
 | **Slither** | 7 | Static analyzer (SlithIR) | Mandatory **static analysis** + printers for the trust-boundary map (gate 2, gate 3). Handles solc 0.5.x. |
 | **Aderyn** | 11 | Rust AST static analyzer | Second static pass (gate 2). *Caveat: can't parse solc <0.6 → marked `NOT covered` there.* |
-| **Semgrep** + Decurity rules | 10 | Pattern/taint static analysis | Static pass with the DeFi ruleset `p/smart-contracts` (gate 2). |
+| **Semgrep** + Decurity rules | 10 | Pattern/taint static analysis | Static pass, two rulesets (gate 2): the Decurity DeFi set `p/smart-contracts` **and** the in-repo TRON/TVM-native set `tooling/semgrep-tron/` (ships with the skill, no install — see its `README.md`). |
 | **Mythril** (`myth`) | 9 | Symbolic execution over bytecode | Symbolic pass on high-value / **bytecode-only** targets (gate 2). *Degraded on TVM prologue opcodes — see the TVM caveat in SKILL.md.* |
 | **Echidna** | 15 | Coverage-guided property fuzzer | **Invariant/property fuzzing** (gate 6). |
 | **Medusa** | 15 | Parallel fuzzer (Echidna-model) | Invariant fuzzing, larger campaigns (gate 6). |

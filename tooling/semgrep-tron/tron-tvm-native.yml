@@ -1,0 +1,63 @@
+# TRON/TVM-native Semgrep rules — audit INVENTORY hotspots, NOT findings.
+# Solidity support in Semgrep is experimental and these are pattern-based (no reliable
+# dataflow), so treat every match as a POINTER: the auditor must trace
+#   entrypoint -> access control -> user data -> checks -> sink -> financial impact
+# before it is a finding. Mirrors the `tvm-native` category in ../../vulnerable-functions.md.
+# Run:  semgrep --config tooling/semgrep-tron/ <src>
+rules:
+  - id: tron-trc10-msgtoken-context
+    languages: [solidity]
+    severity: WARNING
+    message: >
+      TRC-10 context (msg.tokenvalue / msg.tokenid) is used. VERIFY msg.tokenid is
+      checked against the expected token id BEFORE trusting msg.tokenvalue — otherwise
+      an attacker deposits a worthless self-issued TRC-10 and withdraws a real asset
+      (BTTBank-class drain).
+    metadata: { category: security, tron: true, severity: LOW-inventory, ref: "vulnerable-functions.md#tvm-native" }
+    pattern-either:
+      - pattern: msg.tokenvalue
+      - pattern: msg.tokenid
+
+  - id: tron-transfertoken-call
+    languages: [solidity]
+    severity: WARNING
+    message: >
+      transferToken(...) moves a TRC-10 token. VERIFY the tokenId argument is trusted /
+      allowlisted (not user-controlled) and matches the intended asset.
+    metadata: { category: security, tron: true, severity: LOW-inventory, ref: "vulnerable-functions.md#tvm-native" }
+    pattern-either:
+      - pattern: $X.transferToken(...)
+      - pattern: transferToken(...)
+
+  - id: tron-tokenbalance-call
+    languages: [solidity]
+    severity: INFO
+    message: >
+      tokenBalance(...) reads a TRC-10 balance. VERIFY the tokenId is trusted, not
+      attacker-controlled (balance of an attacker-chosen fake token can spoof accounting).
+    metadata: { category: security, tron: true, severity: LOW-inventory, ref: "vulnerable-functions.md#tvm-native" }
+    pattern-either:
+      - pattern: $X.tokenBalance(...)
+      - pattern: tokenBalance(...)
+
+  - id: tron-trctoken-param
+    languages: [solidity]
+    severity: INFO
+    message: >
+      A trcToken value is in scope. If it comes from calldata/user input, VERIFY it is
+      range-checked or allowlisted before use in transfer/accounting.
+    metadata: { category: security, tron: true, severity: LOW-inventory, ref: "vulnerable-functions.md#tvm-native" }
+    pattern: trcToken $ID
+
+  - id: tron-native-value-decimals
+    languages: [solidity]
+    severity: INFO
+    message: >
+      Hardcoded 1e18 / `ether` unit. On TRON the NATIVE channel is SUN (1 TRX = 1e6, 6
+      decimals) — a native-value path scaled by 1e18 misprices by 1e12x. VERIFY native
+      (msg.value/callValue) math uses SUN, not wei.
+    metadata: { category: security, tron: true, severity: LOW-inventory, ref: "vulnerable-functions.md#tvm-native" }
+    pattern-either:
+      - pattern: "1 ether"
+      - pattern: "1e18"
+      - pattern: "1000000000000000000"

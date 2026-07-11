@@ -2,6 +2,11 @@
 
 All notable changes to the `reviewing-smart-contracts` skill.
 
+## [Unreleased]
+
+### Tooling
+- **`tooling/semgrep-tron/`** — custom TRON/TVM-native Semgrep ruleset (5 rules) turning the `tvm-native` checklist into automatic audit-inventory hotspots: `msg.tokenvalue/tokenid` context, `transferToken`/`tokenBalance` token-id trust, `trcToken` calldata params, and SUN-vs-1e18 native decimals. LOW/inventory by design — a match is a pointer, not a finding. Ships in-repo (no install); `bootstrap.sh` step 10 validates it; wired into `SKILL.md` gate 2 (`semgrep --config tooling/semgrep-tron/`). Fixture `tron-tvm-native.sol` (vulnerable + safe contracts) smoke-tests every rule.
+
 ## [0.1.0] — initial public version
 
 First published version. Consolidates everything built and validated to date.

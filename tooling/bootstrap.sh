@@ -225,6 +225,13 @@ else
   git clone --depth 1 https://github.com/Decurity/semgrep-smart-contracts "$RULES_DIR" \
     && ok "Decurity rules -> $RULES_DIR" || fail "Decurity semgrep rules"
 fi
+# TRON/TVM-native ruleset ships in-repo (no install); validate it if present.
+TRON_RULES="$(cd "$(dirname "$0")" && pwd)/semgrep-tron"
+if [ -d "$TRON_RULES" ]; then
+  semgrep --validate --config "$TRON_RULES" >/dev/null 2>&1 \
+    && ok "TRON semgrep rules valid -> $TRON_RULES (use: semgrep --config tooling/semgrep-tron/)" \
+    || warn "TRON semgrep rules present but --validate failed"
+fi
 
 # =============================================================================
 log "[11/16] Aderyn via cyfrinup"
