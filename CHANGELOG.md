@@ -5,6 +5,7 @@ All notable changes to the `reviewing-smart-contracts` skill.
 ## [Unreleased]
 
 ### Tooling
+- **`bootstrap.sh` step 5 — multi-version TRON solc forks.** Was: only `tron-solc 0.8.27`. Now installs a spread across the major bands (`0.4.25 0.5.8 0.5.17 0.6.12 0.7.6 0.8.18 0.8.22 0.8.25 0.8.26 0.8.27`) so `get-source.sh` recompile-match reaches **FULL-MATCH** on old and new targets alike (vanilla solc of the same version emits different bytecode than the TVM fork). Resolves both release asset schemes automatically — plain `solc-macos`/`solc-static-linux` binary for ≥0.8.18, and the zip-with-codename (e.g. `solidity-mac_0.7.6_Plato_v4.2.zip`, irregular `0.4.25_Odyssey_v3.2.3` tag) for older — via the GitHub releases index, extracting the inner `solc`. Override with `TRON_SOLC_VERSIONS="…"`. Resolves the prior Known-TODO.
 - **`tooling/semgrep-tron/`** — custom TRON/TVM-native Semgrep ruleset (5 rules) turning the `tvm-native` checklist into automatic audit-inventory hotspots: `msg.tokenvalue/tokenid` context, `transferToken`/`tokenBalance` token-id trust, `trcToken` calldata params, and SUN-vs-1e18 native decimals. LOW/inventory by design — a match is a pointer, not a finding. Ships in-repo (no install); `bootstrap.sh` step 10 validates it; wired into `SKILL.md` gate 2 (`semgrep --config tooling/semgrep-tron/`). Fixture `tron-tvm-native.sol` (vulnerable + safe contracts) smoke-tests every rule.
 
 ## [0.1.0] — initial public version
@@ -39,4 +40,4 @@ First published version. Consolidates everything built and validated to date.
 - Enriched by a 30-source deep-research pass (Trail of Bits, EthTrust, OWASP SCSVS, Secureum, SCSFG, and major incident post-mortems); only TVM-native, non-generic findings were integrated.
 
 ### Known TODO
-- Add the TRON solc **forks** (`tron-0.4.25_Odyssey`, `tron_v0.5.x/0.6.12/0.7.6/0.8.18`, …) to `bootstrap.sh` so `get-source.sh` recompile-match yields FULL-MATCH instead of skipping (currently only `tron-solc 0.8.27` is installed).
+- _(resolved in Unreleased — multi-version TRON solc forks now installed by `bootstrap.sh` step 5.)_

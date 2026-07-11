@@ -13,14 +13,16 @@
 #
 # Usage:   bash bootstrap.sh
 # Options: SOLC_VERSIONS="0.5.17 0.6.12 0.7.6 0.8.19 0.8.26" bash bootstrap.sh
-#          TRON_SOLC_VERSIONS="0.8.27 0.8.26" bash bootstrap.sh
+#          TRON_SOLC_VERSIONS="0.4.25 0.5.8 0.7.6 0.8.18 0.8.27" bash bootstrap.sh
 # =============================================================================
 
 set -u -o pipefail
 
 # ------------------------------ configuration -------------------------------
 SOLC_VERSIONS="${SOLC_VERSIONS:-0.5.17 0.6.12 0.7.6 0.8.19 0.8.26}"
-TRON_SOLC_VERSIONS="${TRON_SOLC_VERSIONS:-0.8.27}"   # tags on tronprotocol/solidity are tv_<ver>
+# Spread across the major TRON bands so get-source.sh recompile-match can reach FULL-MATCH
+# for old and new targets alike. Tags are tv_<ver> (except 0.4.25 → 0.4.25_Odyssey_v3.2.3).
+TRON_SOLC_VERSIONS="${TRON_SOLC_VERSIONS:-0.4.25 0.5.8 0.5.17 0.6.12 0.7.6 0.8.18 0.8.22 0.8.25 0.8.26 0.8.27}"
 AUDIT_HOME="${AUDIT_HOME:-$HOME/audit-tools}"
 ENV_DIR="$HOME/.config/fearsoff"
 ENV_FILE="$ENV_DIR/audit.env"
@@ -151,28 +153,74 @@ fi
 # =============================================================================
 log "[5/16] TRON solidity fork (tv_ solc) — versions: $TRON_SOLC_VERSIONS"
 # =============================================================================
-# TVM contracts MUST be compiled with tronprotocol/solidity (tv_ tags), not
-# vanilla solc: TRON energy/TRX opcodes and fork gating differ.
+# TVM contracts MUST be compiled with tronprotocol/solidity, not vanilla solc:
+# same version number, DIFFERENT bytecode (TVM opcodes/metadata/prologue). This is
+# what lets get-source.sh recompile-match reach FULL-MATCH. Two asset schemes:
+#   - modern tags (>=0.8.18): ship a plain solc-macos / solc-static-linux binary
+#   - old tags (<=0.8.11 .. 0.4.25): ship a ZIP whose codename suffix varies per
+#     release (0.4.25 also has an irregular tag), so the exact asset is resolved
+#     from the GitHub releases index rather than guessed from the version.
 TRON_SOLC_DIR="$HOME/.tron-solc"
+[ "$PLATFORM" = macos ] && TV_PLAT=mac || TV_PLAT=linux
+TV_RELEASES="$(mktemp)"
+curl -fsSL "https://api.github.com/repos/tronprotocol/solidity/releases?per_page=100" -o "$TV_RELEASES" 2>/dev/null \
+  || { warn "TRON solc: releases index fetch failed; only plain-binary tags (>=0.8.18) will resolve"; : > "$TV_RELEASES"; }
+
+# <version> -> prints "<download_url>\t<is_zip:0|1>" (empty if no asset for this platform)
+resolve_tv_asset() {
+  python3 - "$1" "$TV_PLAT" "$TV_RELEASES" <<'PY'
+import json, sys
+ver, plat, path = sys.argv[1], sys.argv[2], sys.argv[3]
+try: rels = json.load(open(path))
+except Exception: sys.exit(0)
+rel = next((r for r in rels if r.get("tag_name") == f"tv_{ver}"), None) \
+   or next((r for r in rels if r.get("tag_name","").startswith(f"{ver}_")), None)
+if not rel: sys.exit(0)
+assets = {a["name"]: a["browser_download_url"] for a in rel.get("assets", [])}
+exact = "solc-macos" if plat == "mac" else "solc-static-linux"
+if exact in assets:
+    print(assets[exact] + "\t0"); sys.exit(0)
+needle = f"-{plat}_"   # matches solidity-mac_ / tron-solidity-mac_ / solidity-linux_ ...
+for name, url in assets.items():
+    if needle in name and name.endswith(".zip"):
+        print(url + "\t1"); sys.exit(0)
+PY
+}
+
 for v in $TRON_SOLC_VERSIONS; do
   dest="$TRON_SOLC_DIR/tv_$v/solc"
-  if [ -x "$dest" ]; then ok "tron-solc $v already installed"; continue; fi
+  if [ -x "$dest" ]; then ok "tron-solc $v already installed"; ln -sf "$dest" "$LOCAL_BIN/tron-solc-$v"; continue; fi
   mkdir -p "$(dirname "$dest")"
-  if [ "$PLATFORM" = macos ]; then asset="solc-macos"; else asset="solc-static-linux"; fi
-  url="https://github.com/tronprotocol/solidity/releases/download/tv_$v/$asset"
-  if curl -fL -o "$dest" "$url"; then
+  line="$(resolve_tv_asset "$v")"; url="${line%%$'\t'*}"; is_zip="${line##*$'\t'}"
+  if [ -z "$url" ]; then   # fallback: direct URL (valid only for plain-binary >=0.8.18 tags)
+    [ "$PLATFORM" = macos ] && asset="solc-macos" || asset="solc-static-linux"
+    url="https://github.com/tronprotocol/solidity/releases/download/tv_$v/$asset"; is_zip=0
+  fi
+  if [ "$is_zip" = 1 ]; then
+    z="$(mktemp)"; td="$(mktemp -d)"
+    if curl -fL -o "$z" "$url" && unzip -oq "$z" -d "$td"; then
+      inner="$(find "$td" -type f -name solc | head -1)"
+      [ -n "$inner" ] && cp "$inner" "$dest" || fail "tron-solc $v (no solc in zip)"
+    else fail "tron-solc $v (zip $url)"; fi
+    rm -rf "$z" "$td"
+  else
+    curl -fL -o "$dest" "$url" || fail "tron-solc $v (download $url)"
+  fi
+  if [ -f "$dest" ]; then
     chmod +x "$dest"
+    [ "$PLATFORM" = macos ] && xattr -dr com.apple.quarantine "$dest" 2>/dev/null || true
     ln -sf "$dest" "$LOCAL_BIN/tron-solc-$v"
     ok "tron-solc $v -> $LOCAL_BIN/tron-solc-$v"
   else
-    fail "tron-solc $v (download $url)"
+    warn "tron-solc $v: no $TV_PLAT asset resolved (skipped)"
   fi
 done
-# default symlink = last version in the list
+rm -f "$TV_RELEASES"
+# default symlink = last successfully-installed version in the list
 last_tv="$(printf '%s\n' $TRON_SOLC_VERSIONS | tail -1)"
 [ -x "$TRON_SOLC_DIR/tv_$last_tv/solc" ] && ln -sf "$TRON_SOLC_DIR/tv_$last_tv/solc" "$LOCAL_BIN/tron-solc"
 [ "$PLATFORM" = macos ] && [ "$ARCH" = arm64 ] && \
-  warn "TRON solc-macos is x86_64; runs via Rosetta 2 on Apple Silicon"
+  warn "TRON solc binaries are x86_64; run via Rosetta 2 on Apple Silicon (softwareupdate --install-rosetta)"
 
 # =============================================================================
 log "[6/16] Foundry (forge / cast / anvil / chisel)"
