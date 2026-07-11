@@ -265,7 +265,7 @@ fi
 have tronbox && ok "tronbox $(tronbox version 2>/dev/null | head -1)"
 
 # =============================================================================
-log "[15/16] Echidna + Medusa (property-based fuzzers)"
+log "[15/16] Echidna + Medusa (property fuzzers) + Halmos (symbolic testing)"
 # =============================================================================
 if ! have echidna; then
   if [ "$PLATFORM" = macos ] && have brew; then
@@ -293,6 +293,12 @@ if ! have medusa; then
   fi
 fi
 have medusa && ok "medusa $(medusa --version 2>/dev/null | head -1)"
+
+# Halmos — symbolic-execution unit tester (the skill's gate 7 accepts a symbolic counterexample as proof)
+if ! have halmos; then
+  { have pipx && pipx install halmos >/dev/null 2>&1; } || pip install --user halmos >/dev/null 2>&1 || warn "halmos (retry: pipx install halmos)"
+fi
+have halmos && ok "halmos $(halmos --version 2>/dev/null | head -1)"
 
 # =============================================================================
 log "[16/16] TronGrid / Tronscan API keys (read-only rate-limit relief)"
