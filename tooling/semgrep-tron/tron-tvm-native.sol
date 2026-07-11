@@ -25,24 +25,34 @@ contract TronVulnerable {
         return address(this).tokenBalance(id);
     }
 
-    function priceNative() external pure returns (uint256) {
+    // 1e18 scaling ON a native-value (msg.value) path, single expression — must fire.
+    function priceNative() external payable returns (uint256) {
         // ruleid: tron-native-value-decimals
-        return 1 ether;
+        return msg.value * 1e18;
     }
 
-    function scale(uint256 x) external pure returns (uint256) {
-        // ruleid: tron-native-value-decimals
-        return x * 1e18;
+    // Weak randomness from TVM constants — must fire.
+    function pickWinner() external view returns (uint256) {
+        // ruleid: tron-weak-randomness-tvm-constants
+        return uint256(block.difficulty) % players;
+    }
+
+    // Ethereum 0xff CREATE2 preimage — wrong on TVM (0x41) — must fire.
+    function predict(bytes32 salt, bytes32 codeHash) external view returns (address) {
+        // ruleid: tron-create2-eth-prefix
+        return address(uint160(uint256(keccak256(abi.encodePacked(bytes1(0xff), address(this), salt, codeHash)))));
     }
 
     mapping(address => uint256) credit;
     trcToken realTokenId;
+    uint256 players;
 }
 
-// Safe contract: a plain ERC20-style contract with NO TRON-native constructs.
+// Safe contract: plain ERC20-style + ordinary 18-decimal WAD math NOT on a native path.
 // None of the rules should fire anywhere in here.
 contract PlainErc20Like {
     mapping(address => uint256) public balanceOf;
+    uint256 public constant WAD = 1e18; // ok: tron-native-value-decimals
 
     function transfer(address to, uint256 amount) external returns (bool) {
         balanceOf[msg.sender] -= amount;
@@ -50,7 +60,9 @@ contract PlainErc20Like {
         return true;
     }
 
-    function value() external payable returns (uint256) {
-        return msg.value;
+    // 18-decimal share math with no msg.value in scope — must NOT fire.
+    function toShares(uint256 assets, uint256 rate) external pure returns (uint256) {
+        // ok: tron-native-value-decimals
+        return (assets * 1e18) / rate;
     }
 }

@@ -59,13 +59,16 @@ meta = {"address": addr, "status": status, "contract_name": name,
         "compiler": comp, "optimizer": opt, "optimizer_runs": runs,
         "evm_version": evm, "via_ir": viair, "license": lic,
         "files": [c.get("name") for c in code],
-        "code_hash": code_hash or None,           # keccak256(runtime), authoritative
+        "code_hash": code_hash or None,           # keccak256(node runtimecode)
         "runtime_len_bytes": len(runtime)//2 if runtime else 0}
 
-# attestation (authoritative): keccak256(runtime) must equal the on-chain code_hash.
-# The on-chain hash is getcontractinfo.smart_contract.code_hash — NOT any init/deployment
-# bytecode field (/api/solidity/contract/info.byte_code, /api/contracts/code.byteCode and
-# /wallet/getcontract.bytecode are DEPLOYMENT code with the constructor, so never compare those).
+# node self-consistency check ONLY — this is NOT source authority.
+# keccak256(node runtimecode) vs the node's own smart_contract.code_hash proves the runtime
+# blob we hashed is the real deployed one (guards a truncated/corrupt field); it says NOTHING
+# about whether the fetched .sol produced that runtime. Source authority = recompile FULL_MATCH
+# (see recompile_status below). The on-chain hash is getcontractinfo.smart_contract.code_hash —
+# NOT any init/deployment bytecode field (/api/solidity/contract/info.byte_code,
+# /api/contracts/code.byteCode, /wallet/getcontract.bytecode are DEPLOYMENT code w/ constructor).
 onchain_ch = ""
 try:
     onchain_ch = ((json.load(open(f"{out}/_gci.json")).get("smart_contract") or {}).get("code_hash") or "").lower().removeprefix("0x")
@@ -75,7 +78,9 @@ meta["onchain_code_hash"] = onchain_ch or None
 att = ("no-runtime" if not runtime
        else "no-onchain-hash" if not onchain_ch
        else "MATCH" if code_hash == onchain_ch else "DIFFER")
-meta["bytecode_attestation"] = att
+meta["node_runtime_hash_match"] = att            # node self-consistency, NOT source→runtime proof
+meta["explorer_source_status"] = status          # 2 = TronScan says verified (explorer trust only)
+meta["recompile_status"] = "PENDING"             # overwritten by the recompile step below
 
 if status == 2 and code:
     srcdir = f"{out}/src"; os.makedirs(srcdir, exist_ok=True)
@@ -91,7 +96,10 @@ if status == 2 and code:
         cdir = os.path.join(os.path.expanduser(cache), code_hash)
         if not os.path.isdir(cdir):
             shutil.copytree(srcdir, os.path.join(cdir,"src")); shutil.copy(f"{out}/compiler.json", cdir)
-    print(f"VERIFIED status=2 files={len(code)} compiler={comp} opt={opt}/{runs} evm={evm} attest={att}")
+    print(f"EXPLORER-VERIFIED status=2 files={len(code)} compiler={comp} opt={opt}/{runs} evm={evm} node_runtime_hash={att}")
+    if att == "DIFFER":
+        print("  WARNING: node runtimecode does NOT hash to the node's own code_hash (data anomaly) — treat runtime with suspicion")
+    print("  NOTE: 'verified' here = TronScan's badge only. Source is authoritative ONLY on recompile=FULL-MATCH below.")
     print(f"  contract={name}  -> {out}/src/  (+ compiler.json, abi.json, runtime.hex)")
     print(f"  code_hash={code_hash}")
     sys.exit(0)
@@ -124,8 +132,14 @@ comp = meta.get("compiler") or ""; target = meta.get("contract_name")
 onchain = (meta.get("onchain_code_hash") or "").lower()
 try: runtime = open(f"{out}/runtime.hex").read().strip().lower()
 except Exception: runtime = ""
+def finish(status, msg):
+    # persist machine-readable recompile state so the audit can GATE on it
+    meta["recompile_status"] = status                 # FULL_MATCH | PARTIAL | NO_MATCH | SKIPPED
+    meta["source_authoritative"] = (status == "FULL_MATCH")
+    json.dump(meta, open(f"{out}/compiler.json","w"), indent=2)
+    print(msg); sys.exit(0)
 m = re.search(r'(\d+\.\d+\.\d+)', comp)
-if not m: print("  recompile: skipped (no compiler version parsed)"); sys.exit(0)
+if not m: finish("SKIPPED", "  recompile=SKIPPED (no compiler version parsed) — source NOT authoritative")
 ver = m.group(1)
 def find_solc(ver):
     home = os.path.expanduser("~")
@@ -144,8 +158,7 @@ def find_solc(ver):
     return None, None
 solc, kind = find_solc(ver)
 if not solc:
-    print(f"  recompile: skipped (need solc {ver}; TRON fork = exact match, stock solc = approximate). `solc-select install {ver}` to enable.")
-    sys.exit(0)
+    finish("SKIPPED", f"  recompile=SKIPPED (need solc {ver}; TRON fork = exact match, stock solc = approximate). `bash tooling/bootstrap.sh` or `solc-select install {ver}` to enable. — source NOT authoritative")
 srcdir = f"{out}/src"; sources = {}
 for root,_,files in os.walk(srcdir):
     for f in files:
@@ -162,7 +175,7 @@ try:
     r = subprocess.run([solc,"--standard-json"], input=json.dumps(inp), capture_output=True, text=True, timeout=240)
     oj = json.loads(r.stdout or "{}")
 except Exception as e:
-    print(f"  recompile: skipped (solc failed: {str(e)[:80]})"); sys.exit(0)
+    finish("SKIPPED", f"  recompile=SKIPPED (solc failed: {str(e)[:80]}) — source NOT authoritative")
 dep = ""
 for cs in (oj.get("contracts") or {}).values():
     for cname, obj in cs.items():
@@ -174,19 +187,19 @@ if not dep:
     dep = max(allb, key=len, default="")
 if not dep:
     errs = [e.get("formattedMessage","") for e in oj.get("errors",[]) if e.get("severity")=="error"]
-    print("  recompile: no deployedBytecode (compile error: %s)" % (errs[0][:100] if errs else "unknown")); sys.exit(0)
+    finish("SKIPPED", "  recompile=SKIPPED (no deployedBytecode; compile error: %s) — source NOT authoritative" % (errs[0][:100] if errs else "unknown"))
 def strip_meta(hx):
     try:
         n = int(hx[-4:], 16); return hx[:-(n+2)*2]
     except Exception: return hx
 kh = subprocess.run(["cast","keccak","0x"+dep], capture_output=True, text=True).stdout.strip().lower().replace("0x","")
 if kh and kh == onchain:
-    print(f"  recompile=FULL-MATCH (solc {ver} {kind}) — source→deployed bytecode independently verified")
+    finish("FULL_MATCH", f"  recompile=FULL-MATCH (solc {ver} {kind}) — source→deployed bytecode independently verified; source IS authoritative")
 elif runtime and strip_meta(dep) and strip_meta(dep) == strip_meta(runtime):
-    print(f"  recompile=PARTIAL-MATCH (solc {ver} {kind}; only trailing metadata differs) — source is the deployed one")
+    finish("PARTIAL", f"  recompile=PARTIAL-MATCH (solc {ver} {kind}; only trailing metadata/immutables differ) — source is very likely the deployed one, but NOT a full byte-proof")
 else:
     note = "" if kind=="tron" else " — used STOCK solc; the TRON solc fork is needed for exact bytes"
-    print(f"  recompile=NO-MATCH{note} (review source/settings, or get the exact TRON compiler)")
+    finish("NO_MATCH", f"  recompile=NO-MATCH{note} (review source/settings, or get the exact TRON compiler) — source NOT authoritative")
 PY
 fi
 

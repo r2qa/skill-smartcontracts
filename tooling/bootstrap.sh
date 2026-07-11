@@ -267,11 +267,20 @@ log "[10/16] Semgrep + Decurity smart-contract rules"
 have semgrep || pipx install semgrep || fail "semgrep"
 have semgrep && ok "semgrep $(semgrep --version 2>/dev/null)"
 RULES_DIR="$AUDIT_HOME/semgrep-smart-contracts"
+# PIN the ruleset commit for reproducible audits — a floating `git pull` would silently
+# change results between runs. Override with DECURITY_REF=<sha|tag> to bump deliberately.
+DECURITY_REF="${DECURITY_REF:-2e878a89ac7bba1f8435e8a68e3ecb7700096cd5}"
+if [ ! -d "$RULES_DIR/.git" ]; then
+  git clone https://github.com/Decurity/semgrep-smart-contracts "$RULES_DIR" \
+    || fail "Decurity semgrep rules (clone)"
+fi
 if [ -d "$RULES_DIR/.git" ]; then
-  git -C "$RULES_DIR" pull --ff-only >/dev/null 2>&1 && ok "Decurity rules updated" || warn "Decurity rules: pull skipped"
-else
-  git clone --depth 1 https://github.com/Decurity/semgrep-smart-contracts "$RULES_DIR" \
-    && ok "Decurity rules -> $RULES_DIR" || fail "Decurity semgrep rules"
+  git -C "$RULES_DIR" fetch --quiet origin "$DECURITY_REF" 2>/dev/null || git -C "$RULES_DIR" fetch --quiet --all 2>/dev/null || true
+  if git -C "$RULES_DIR" checkout --quiet "$DECURITY_REF" 2>/dev/null; then
+    ok "Decurity rules pinned @ ${DECURITY_REF:0:12} -> $RULES_DIR"
+  else
+    warn "Decurity rules: could not check out $DECURITY_REF (using whatever is checked out)"
+  fi
 fi
 # TRON/TVM-native ruleset ships in-repo (no install); validate it if present.
 TRON_RULES="$(cd "$(dirname "$0")" && pwd)/semgrep-tron"

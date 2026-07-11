@@ -3,28 +3,42 @@
 # dataflow), so treat every match as a POINTER: the auditor must trace
 #   entrypoint -> access control -> user data -> checks -> sink -> financial impact
 # before it is a finding. Mirrors the `tvm-native` category in ../../vulnerable-functions.md.
+# Severity maps to Semgrep's scale: INFO = LOW/inventory hotspot, WARNING = higher-signal
+# (something concrete to confirm). Nothing here is ERROR — a match is never proof.
 # Run:  semgrep --config tooling/semgrep-tron/ <src>
 rules:
   - id: tron-trc10-msgtoken-context
     languages: [solidity]
-    severity: WARNING
+    severity: INFO
     message: >
       TRC-10 context (msg.tokenvalue / msg.tokenid) is used. VERIFY msg.tokenid is
       checked against the expected token id BEFORE trusting msg.tokenvalue — otherwise
       an attacker deposits a worthless self-issued TRC-10 and withdraws a real asset
       (BTTBank-class drain).
-    metadata: { category: security, tron: true, severity: LOW-inventory, ref: "vulnerable-functions.md#tvm-native" }
+    metadata:
+      category: security
+      tron: true
+      confidence: LOW
+      subcategory: [audit]
+      references:
+        - https://developers.tron.network/docs/trc10-transfer-in-smart-contracts
     pattern-either:
       - pattern: msg.tokenvalue
       - pattern: msg.tokenid
 
   - id: tron-transfertoken-call
     languages: [solidity]
-    severity: WARNING
+    severity: INFO
     message: >
       transferToken(...) moves a TRC-10 token. VERIFY the tokenId argument is trusted /
       allowlisted (not user-controlled) and matches the intended asset.
-    metadata: { category: security, tron: true, severity: LOW-inventory, ref: "vulnerable-functions.md#tvm-native" }
+    metadata:
+      category: security
+      tron: true
+      confidence: LOW
+      subcategory: [audit]
+      references:
+        - https://developers.tron.network/docs/trc10-transfer-in-smart-contracts
     pattern-either:
       - pattern: $X.transferToken(...)
       - pattern: transferToken(...)
@@ -35,7 +49,11 @@ rules:
     message: >
       tokenBalance(...) reads a TRC-10 balance. VERIFY the tokenId is trusted, not
       attacker-controlled (balance of an attacker-chosen fake token can spoof accounting).
-    metadata: { category: security, tron: true, severity: LOW-inventory, ref: "vulnerable-functions.md#tvm-native" }
+    metadata:
+      category: security
+      tron: true
+      confidence: LOW
+      subcategory: [audit]
     pattern-either:
       - pattern: $X.tokenBalance(...)
       - pattern: tokenBalance(...)
@@ -46,18 +64,75 @@ rules:
     message: >
       A trcToken value is in scope. If it comes from calldata/user input, VERIFY it is
       range-checked or allowlisted before use in transfer/accounting.
-    metadata: { category: security, tron: true, severity: LOW-inventory, ref: "vulnerable-functions.md#tvm-native" }
+    metadata:
+      category: security
+      tron: true
+      confidence: LOW
+      subcategory: [audit]
     pattern: trcToken $ID
 
   - id: tron-native-value-decimals
     languages: [solidity]
-    severity: INFO
+    severity: WARNING
     message: >
-      Hardcoded 1e18 / `ether` unit. On TRON the NATIVE channel is SUN (1 TRX = 1e6, 6
-      decimals) — a native-value path scaled by 1e18 misprices by 1e12x. VERIFY native
-      (msg.value/callValue) math uses SUN, not wei.
-    metadata: { category: security, tron: true, severity: LOW-inventory, ref: "vulnerable-functions.md#tvm-native" }
+      msg.value (the NATIVE value channel) combined directly with an 18-decimal literal
+      (1e18 / `ether`). On TRON native value is SUN (1 TRX = 1e6, 6 decimals), so 1e18
+      scaling on a native-value path misprices by 1e12x. VERIFY the native math uses SUN,
+      not wei. NOTE (Semgrep Solidity = no dataflow): this catches only the single-
+      expression form; msg.value assigned to a local and scaled elsewhere is NOT caught —
+      still grep msg.value/callvalue paths by hand. Plain 18-decimal WAD/TRC-20 math is
+      deliberately not flagged.
+    metadata:
+      category: security
+      tron: true
+      confidence: MEDIUM
+      subcategory: [audit]
+      references:
+        - https://developers.tron.network/docs/tvm
     pattern-either:
-      - pattern: "1 ether"
-      - pattern: "1e18"
-      - pattern: "1000000000000000000"
+      - pattern: msg.value * 1e18
+      - pattern: 1e18 * msg.value
+      - pattern: msg.value / 1e18
+      - pattern: msg.value * 1 ether
+      - pattern: 1 ether * msg.value
+      - pattern: msg.value / 1 ether
+      - pattern: msg.value * 1000000000000000000
+      - pattern: msg.value / 1000000000000000000
+
+  - id: tron-weak-randomness-tvm-constants
+    languages: [solidity]
+    severity: WARNING
+    message: >
+      block.difficulty / block.prevrandao / block.gaslimit are CONSTANTS on the TVM (not
+      per-block entropy as on Ethereum). Using them for randomness or as a guard is
+      trivially predictable. VERIFY this value is not relied on for unpredictability.
+    metadata:
+      category: security
+      tron: true
+      confidence: MEDIUM
+      subcategory: [audit]
+      references:
+        - https://developers.tron.network/docs/tvm
+    pattern-either:
+      - pattern: block.difficulty
+      - pattern: block.prevrandao
+      - pattern: block.gaslimit
+
+  - id: tron-create2-eth-prefix
+    languages: [solidity]
+    severity: WARNING
+    message: >
+      A 0xff byte in what looks like a CREATE2 address preimage. TVM computes the CREATE2
+      address with a 0x41 prefix, NOT Ethereum's 0xff. A hand-rolled 0xff preimage will
+      predict the WRONG address on TRON. VERIFY any off-chain/precomputed CREATE2 address
+      uses the 0x41 scheme.
+    metadata:
+      category: security
+      tron: true
+      confidence: MEDIUM
+      subcategory: [audit]
+      references:
+        - https://developers.tron.network/docs/tvm
+    pattern-either:
+      - pattern: bytes1(0xff)
+      - pattern: hex"ff"
