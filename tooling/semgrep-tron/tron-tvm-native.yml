@@ -69,7 +69,10 @@ rules:
       tron: true
       confidence: LOW
       subcategory: [audit]
-    pattern: trcToken $ID
+    pattern-either:
+      - pattern: |
+          function $F(..., trcToken $ID, ...) { ... }
+      - pattern: trcToken $ID
 
   - id: tron-native-value-decimals
     languages: [solidity]

@@ -263,12 +263,16 @@
 - **Risk:** Reordering, inserting, or removing state variables between upgrades corrupts all storage (silent fund misaccounting).
 - **Verify:** Diff storage layout between old/new impl; verify appended-only variables; verify __gap reduced by exactly the number of new slots; verify inheritance order unchanged; verify no immutable/constant assumptions moved to storage.
 
+### `ERC-7201 namespaced storage (OZ 5.x) — @custom:storage-location / erc7201:... slots`
+- **Risk:** OZ 5.x abandons sequential slots + `__gap` for **namespaced storage** (`keccak256(abi.encode(uint256(keccak256("id")) - 1)) & ~0xff`). Auditing such a contract with the old `__gap`/sequential-layout mental model misses real collisions: a wrong or duplicated namespace string, a hand-written slot that doesn't match the `@custom:storage-location`, or mixing sequential and namespaced state across an upgrade.
+- **Verify:** For OZ 5.x / namespaced contracts, recompute each `erc7201:` slot from its label and confirm the struct is read/written there; verify namespaces are unique and stable across versions; confirm no legacy sequential state coexists in a colliding slot.
+
 ### `constructor logic in an upgradeable contract`
 - **Risk:** Constructors don't run in proxy context, so state set in a constructor is absent behind the proxy (uninitialized critical state).
 - **Verify:** Verify no critical state set in constructor of upgradeable impls; verify moved to initialize(); verify immutables used only for genuinely constant values.
 
 ### `selfdestruct / SELFDESTRUCT reachable from impl or delegatecalled lib`
-- **Risk:** A selfdestruct in the implementation (esp. via delegatecall) can destroy the logic contract and brick every proxy pointing to it (Parity library kill). **EIP-6780 neutralizes this: SELFDESTRUCT deletes code only when called in the same tx as creation. It is live on post-Cancun mainnet EVM AND — as of 2026-04-10 — on TRON mainnet (Proposal 94 / GreatVoyage-v4.8.1; SELFDESTRUCT energy raised 0→5000). So the impl/library brick is DEAD on both post-Cancun EVM and current TRON; it is a finding only on pre-6780 chains or a contract destroyed inside its own creation tx (metamorphic CREATE2+SELFDESTRUCT). Balance transfer to the target still happens, so force-feed still works.**
+- **Risk:** A selfdestruct in the implementation (esp. via delegatecall) can destroy the logic contract and brick every proxy pointing to it (Parity library kill). **EIP-6780 neutralizes this: SELFDESTRUCT deletes code only when called in the same tx as creation. It is live on post-Cancun mainnet EVM AND — as of 2026-04-10 — on TRON mainnet (Proposal 94 / GreatVoyage-v4.8.1; SELFDESTRUCT energy raised 0→5000). So the impl/library brick is DEAD on both post-Cancun EVM and current TRON; it is a finding only on pre-6780 chains or a contract destroyed inside its own creation tx (metamorphic CREATE2+SELFDESTRUCT). Balance transfer to the target still happens, so force-feed still works.** TRON gates the behavior behind **network parameter #94** (shipped in GreatVoyage-v4.8.1 Democritus) — on a fork / private net / testnet where #94 is still 0 the old brick vector is live, so **verify #94's state on the actual target chain** rather than assuming either way.
 - **Verify:** Grep for selfdestruct/suicide; verify none reachable in implementation/library; confirm the target chain's EIP-6780 status (dead on post-Cancun EVM and on TRON since 2026-04-10; live only on pre-6780 chains or same-tx create+destroy); ensure no arbitrary-call path reaches it.
 
 
@@ -297,6 +301,10 @@
 ### `Merkle root / setRoot / confirmedRoots mapping`
 - **Risk:** Accepting an unconfirmed or zero root (Nomad) validates any leaf; root-update auth weakness forges all withdrawals.
 - **Verify:** Verify roots only accepted after confirmation window/attestation; verify zero/default root is NOT auto-trusted; verify leaf encoding domain-separated; verify proof length and index bounds; verify root update authorization.
+
+### `standard cross-chain messaging integrations (LayerZero lzReceive / CCIP ccipReceive / Wormhole VAA / Axelar _execute)`
+- **Risk:** Beyond hand-rolled lock/mint: an app built on a messaging protocol has its own trust assumptions — is the caller the trusted endpoint/router, is the `srcChainId`+`srcAddress` (trusted-remote) enforced, is the VAA/message replay-protected and its emitter/sequence bound, is `payloadHash`/nonce checked? TRON runs a live LayerZero endpoint, so TRON-side apps are in scope. Missing remote/endpoint authentication = forged messages mint/unlock at will.
+- **Verify:** Confirm the receive entrypoint asserts `msg.sender == endpoint/router`; that the source chain + remote address are allowlisted (`trustedRemote`/`getPeer`); replay protection on VAA/message (consumed sequence/nonce, emitter bound); payload integrity; and that failed/blocked messages can't be force-resumed to double-execute.
 
 
 ## liquid-staking
@@ -481,6 +489,14 @@
 ### `ecrecover returns a 20-byte word, but TVM on-chain identity is 21 bytes (0x41 prefix)`
 - **Risk:** `ecrecover` yields a 20-byte address while TRON accounts/contracts are addressed as 21-byte `0x41`-prefixed. In permit/EIP-712/meta-tx/cross-chain-proof code comparing a recovered signer to a stored/derived on-chain identity, the 21-vs-20-byte mismatch (or naive prefix handling) enables a spoof or a check that never matches.
 - **Verify:** Confirm signer comparisons normalize the 0x41 prefix consistently on both sides; EIP-712 domain uses the correct chainid (TRON `0x2b6653dc`); cross-chain proofs bind the 21-byte identity.
+
+### `TRON account-level permission model (owner / active / witness, key weights, threshold) — custody is NOT (only) in Solidity`
+- **Risk:** On TRON an account's control is set at the ACCOUNT level via `AccountPermissionUpdateContract` — owner/active/witness permissions, each with a key list, per-key **weights**, a **threshold**, and an operations bitmap — NOT just Solidity `onlyOwner` modifiers. A treasury/contract "owned" by a single active key whose weight ≥ threshold is effectively a **1-of-1 EOA** even if the Solidity looks multisig-gated; conversely a genuine N-of-M lives in the permission graph, invisible to pure source review. Mis-reading this mis-rates every custody/centralization finding.
+- **Verify:** For any fund-holding account, pull the permission graph via `getaccount` (`owner_permission` + `active_permission`: keys, weights, threshold, operations). Classify custody from THAT, not from modifiers — report the real M-of-N, whether one key alone meets threshold, and whether `AccountPermissionUpdate` is itself guarded. Feed into the Centralization class and the report's custody column.
+
+### `Stake 2.0 economics: UnfreezeBalanceV2 14-day withdraw window + 3-day resource-delegation lock`
+- **Risk:** Staking/resource opcodes carry mandatory TIME economics an EVM checklist ignores, beyond access control. `UnfreezeBalanceV2` enforces a **14-day** unbonding window before TRX is withdrawable (`WithdrawExpireUnfreeze`), and delegated resources have a minimum **3-day** lock. Any energy-rental / withdrawal-queue / liquid-staking contract that assumes instant unstake mis-accounts → insolvency, stuck funds, or a DoS where withdrawals can't be serviced.
+- **Verify:** Model the 14-day unfreeze window and 3-day delegation lock in any contract that stakes on users' behalf; confirm accounting reserves against pending-unbond, and that share/exit math never pays out TRX still locked.
 
 
 ---

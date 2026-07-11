@@ -67,7 +67,7 @@ Actor = `unprivileged` / `authorized-user` / `external-protocol` / `privileged-a
 
 - **In scope.** Address `{{CONTRACT_ADDRESS_BASE58}}` and its source at baseline `{{BASELINE_COMMIT}}`. Files: {{FILES_IN_SCOPE}}.
 - **Out of scope.** {{OUT_OF_SCOPE}} (e.g. off-chain relayers, front end, governance social layer, economic/oracle assumptions unless stated).
-- **Method.** {{METHOD}} — whitebox source review + upstream-diff against `{{UPSTREAM}}`, static analysis (Slither/Aderyn/Semgrep/Mythril), property/invariant reasoning, Foundry proof-of-issue tests, and read-only on-chain state/bytecode verification via TronGrid/TronScan. See `../../methodology.md`.
+- **Method.** {{METHOD}} — whitebox source review + upstream-diff against `{{UPSTREAM}}`, static analysis (Slither/Aderyn/Semgrep/Mythril), property/invariant reasoning, Foundry proof-of-issue tests, and read-only on-chain state/bytecode verification via TronGrid/TronScan.
 - **TRON/TVM specifics considered.** Non-standard TRC-20 return values (USDT), 21-byte `0x41` addresses, Energy/Bandwidth vs gas, `tronprotocol` solc fork, forge-runs-EVM-not-TVM caveats.
 - **Coverage statement.** {{COVERAGE}} — what was tested, what remains **unproven**, and residual risk.
 - **Limitations.** Time-boxed review; not a guarantee of absence of all bugs. Findings reference the frozen baseline; later changes are not covered.
@@ -93,7 +93,7 @@ Within the **Vulnerability** class: Severity = **Impact × Likelihood**, then ad
 
 **Severity definitions**
 
-- **Critical** — Direct, likely loss/lockup of user or protocol funds, unauthorized mint, or bridge/lending insolvency reachable by an unprivileged actor under realistic conditions. Requires a reproducible PoC.
+- **Critical** — Direct, likely loss/lockup of user or protocol funds, unauthorized mint, or bridge/lending insolvency reachable by an unprivileged actor under realistic conditions. Deliver with a reproducible PoC where feasible; if not yet proven, still rate it Critical and mark it `Unproven` — **PoC governs the Proven-status field, not the severity.**
 - **High** — Significant fund risk or integrity breach requiring a specific but attainable precondition, or a privileged-role compromise with outsized blast radius.
 - **Medium** — Limited/conditional loss, temporary DoS of a core function, bounded accounting/rounding error, or an access-control gap mitigated by trust assumptions.
 - **Low** — Minor deviations with small/improbable impact: tight-margin rounding still favoring the pool, DoS needing unrealistic conditions, missing event, non-independently-exploitable defense-in-depth gaps.

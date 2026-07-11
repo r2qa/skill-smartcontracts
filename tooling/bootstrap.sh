@@ -45,8 +45,11 @@ case "$OS" in
   *) echo "Unsupported OS: $OS" >&2; exit 1 ;;
 esac
 
+# Use .zshenv (NOT .zshrc) for zsh: it is sourced by NON-interactive shells too, so the PATH
+# and audit.env exports reach tools spawned by subagents/scripts. .zshrc would only apply to
+# interactive terminals and silently leave agent shells without the toolchain/keys.
 PROFILE="$HOME/.bashrc"
-case "${SHELL:-}" in *zsh) PROFILE="$HOME/.zshrc" ;; esac
+case "${SHELL:-}" in *zsh) PROFILE="$HOME/.zshenv" ;; esac
 touch "$PROFILE"
 
 # idempotent: append a line to the shell profile only if absent

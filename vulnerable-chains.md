@@ -437,12 +437,12 @@
 
 ### Rounding-in-attacker-favor repeated round-trips (rounding drain)  ·  _rounding-drain_
 **Chain:**
-1. Attacker finds an operation that rounds in the user's favor (mint rounds shares up, or withdraw rounds assets up)
+1. Attacker finds an operation that rounds in the user's favor (i.e. the INVERSE of spec — e.g. deposit rounds shares UP, or redeem rounds assets UP)
 2. Repeatedly deposits then withdraws small amounts, each round capturing 1 wei of rounding error
 3. Iterates many times
 4. Cumulatively drains value from other holders / the reserve
 
-- **Blocked by (confirm present):** Rounding is always against the user on every path (deposits round shares down, withdrawals round assets down, mint rounds assets up) via mulDiv with an explicit rounding direction; no profitable zero-sum round-trip exists
+- **Blocked by (confirm present):** Rounding is always against the user on every path — per EIP-4626: **deposit rounds shares DOWN, mint rounds assets UP, withdraw rounds shares UP, redeem rounds assets DOWN** (convertToShares/convertToAssets round DOWN) — via mulDiv with an explicit rounding direction; no profitable zero-sum round-trip exists
 - **Where it applies:** ERC4626, AMM share/LP math, interest-index accrual, staking reward math
 
 ### ERC20 approve-race front-run (allowance double-spend)  ·  _signature-replay_

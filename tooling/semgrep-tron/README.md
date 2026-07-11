@@ -54,7 +54,7 @@ math with no `msg.value` in scope, which must NOT fire). Validate + smoke-test a
 
 ```bash
 semgrep --validate --config tron-tvm-native.yml
-semgrep --config tron-tvm-native.yml tron-tvm-native.sol   # 8 matches (7 rules), none in the safe contract
+semgrep --config tron-tvm-native.yml tron-tvm-native.sol   # 10 matches (7 rules), none in the safe contract
 ```
 
 (`semgrep --test` is the intended harness but crashes in 1.168.0 on the path-matching step;

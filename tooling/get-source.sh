@@ -20,6 +20,12 @@ set -uo pipefail
 [ -f "$HOME/.config/fearsoff/audit.env" ] && source "$HOME/.config/fearsoff/audit.env"
 
 ADDR="${1:?usage: get-source.sh <T-address> [outdir]}"
+# validate the address BEFORE it reaches a POST body or a path — blocks JSON injection and
+# path traversal, and keeps proxy base58-decode well-defined. Base58 T-address, 34 chars.
+case "$ADDR" in
+  T[1-9A-HJ-NP-Za-km-z]*) [ "${#ADDR}" -eq 34 ] || { echo "FATAL: '$ADDR' is not a 34-char base58 T-address" >&2; exit 2; } ;;
+  *) echo "FATAL: address must be a base58 T-address (got '$ADDR'); hex 0x41… is not supported here" >&2; exit 2 ;;
+esac
 OUT="${2:-${FINDINGS_DIR:-./findings}/$ADDR/src-fetched}"
 CACHE="${TRON_SRC_CACHE:-$HOME/.cache/fearsoff/tron-src}"
 TSN="${TRONSCAN_API_KEY:-}"; TG="${TRONGRID_API_KEY:-}"
@@ -29,9 +35,10 @@ command -v cast >/dev/null 2>&1 || { echo "FATAL: 'cast' (foundry) required for 
 mkdir -p "$OUT"
 
 # 1) verified source + compiler settings + abi (may be empty if unverified)
-curl -sS --compressed --max-time 40 "$TS_API/api/solidity/contract/info" \
+curl -fsS --compressed --max-time 40 "$TS_API/api/solidity/contract/info" \
   -H 'Content-Type: application/json' -H "TRON-PRO-API-KEY: $TSN" \
-  --data "{\"contractAddress\":\"$ADDR\"}" > "$OUT/_info.json" || { echo "FATAL: source fetch failed" >&2; exit 2; }
+  --data "{\"contractAddress\":\"$ADDR\"}" > "$OUT/_info.json" \
+  || { echo "FATAL: source fetch failed (HTTP error / rate-limit / network) — this is NOT a 'no source' verdict" >&2; exit 2; }
 
 # 2) authoritative on-chain RUNTIME bytecode (getcontractinfo.runtimecode — NOT the creation blob)
 curl -sS --max-time 30 -X POST "$TG_API/wallet/getcontractinfo" \
@@ -48,12 +55,19 @@ fi
 STATUS=$(python3 - "$OUT" "$ADDR" "$RUNTIME" "$CODE_HASH" "$CACHE" <<'PY'
 import sys, json, base64, os, shutil
 out, addr, runtime, code_hash, cache = sys.argv[1:6]
-d = (json.load(open(f"{out}/_info.json")).get("data") or {})
+raw = json.load(open(f"{out}/_info.json"))
+# distinguish an API/transport anomaly from a genuinely-unverified contract: a real response
+# (verified OR not) carries a `data` object. Its absence = rate-limit/403/error payload → exit 2,
+# NOT the "no source exists" verdict (exit 3) that would wrongly push the auditor to bytecode-only.
+if not isinstance(raw.get("data"), dict):
+    sys.stderr.write("API-ERROR: TronScan returned no `data` object (rate-limit/403/invalid response) — "
+                     "this is NOT a verification verdict. Raw: %s\n" % (json.dumps(raw)[:200]))
+    sys.exit(2)
+d = raw["data"]
 status = d.get("status"); name = d.get("contract_name")
 comp, opt, runs = d.get("compiler"), d.get("optimizer"), d.get("optimizer_runs")
 evm, viair, lic  = d.get("evm_version"), d.get("via_ir"), d.get("license")
 code  = d.get("contract_code") or []
-vbyte = (d.get("byte_code") or "").lower().removeprefix("0x")   # bytecode TronScan verified against
 
 meta = {"address": addr, "status": status, "contract_name": name,
         "compiler": comp, "optimizer": opt, "optimizer_runs": runs,
