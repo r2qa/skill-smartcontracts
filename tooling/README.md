@@ -38,6 +38,11 @@ This table is the contract between `bootstrap.sh` and `SKILL.md`: **every tool i
 | **Node.js / npm** | 3 | runs TronBox |
 | **crytic-compile** | 8 | the compilation driver used by Slither / Echidna / Medusa (crytic toolchain); not called directly |
 
+## Skill helper scripts (not installed — ship with the repo)
+
+- **`get-source.sh <address>`** — verified-source fetch + attestation + recompile-match + proxy resolution (gate 1). See its header.
+- **`review-ledger.sh check|record <address>`** — **dedup guard** (gate 1 / terminal state): records each review's `code_hash` (+ proxy impl hash), skill `VERSION`, and date to `$FINDINGS_DIR/.review-ledger.json`, and on `check` tells the skill to SKIP a redundant re-audit — unless the contract changed, the skill `VERSION` bumped, or `RECHECK=1`. The repo-root **`VERSION`** file is the audit-knowledge version (bump on checklist/rule/methodology changes).
+
 ## Notes
 
 - **Idempotent** — every step checks for an existing install; safe to re-run.
