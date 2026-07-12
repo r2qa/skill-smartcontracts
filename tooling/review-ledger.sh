@@ -98,7 +98,7 @@ except Exception: data = {}
 L = data.get("entries", [])
 L = [e for e in L if e.get("address") != addr]   # replace any prior entry for this address
 sev = {}
-mp = os.path.join(os.path.dirname(os.path.dirname(report)), "metadata.json") if False else f"{os.path.dirname(report)}/metadata.json"
+mp = f"{os.path.dirname(report)}/metadata.json"
 try: sev = json.load(open(mp)).get("severity_counts", {})
 except Exception: pass
 L.append({"address": addr, "code_hash": ch, "impl_hash": (ih if ih != "-" else None),

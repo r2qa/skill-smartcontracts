@@ -377,7 +377,7 @@ if [ ! -f "$ENV_FILE" ]; then
     cp "$EXAMPLE" "$ENV_FILE"
   else
     cat > "$ENV_FILE" <<'EOF'
-# reviewing-smart-contracts — API keys (read-only usage; NEVER commit this file)
+# skill-smartcontracts — API keys (read-only usage; NEVER commit this file)
 # TronGrid: https://www.trongrid.io -> Dashboard -> API Keys.  Header: TRON-PRO-API-KEY
 export TRONGRID_API_KEY=""
 # TronScan: https://tronscan.org/#/myaccount/apiKeys  (verified-source fetch; keyless is stripped since 2025-08)

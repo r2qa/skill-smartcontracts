@@ -311,7 +311,7 @@ if not impl:   # EIP-1967 BEACON slot -> beacon.implementation()
         except Exception: impl = ""
         if impl: via = "beacon"
 if not impl:
-    for sel in ("0x5c60da1b",):  # implementation() getter on the proxy itself
+    for sel in ("0x5c60da1b", "0xbb82aa5e"):  # implementation() / comptrollerImplementation() (Compound Unitroller — JustLend)
         try: impl = nonzero20(rpc("eth_call", [{"to":"0x"+evm20,"data":sel}, "latest"]))
         except Exception: impl = ""
         if impl: via = "getter"; break

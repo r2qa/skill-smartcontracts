@@ -147,7 +147,7 @@
 3. Attacker calls upgradeToAndCall/selfdestruct or a delegatecall on the implementation
 4. All proxies pointing to it are bricked or hijacked
 
-- **Blocked by (confirm present):** Implementation constructor calls _disableInitializers(); _authorizeUpgrade is owner-gated; no selfdestruct or arbitrary delegatecall in the implementation. *(The selfdestruct-brick half of this chain is neutralized by EIP-6780 — only a same-tx-as-creation destroy deletes code — on post-Cancun EVM AND on TRON since 2026-04-10 (Proposal 94 / GreatVoyage-v4.8.1); the re-init/hijack half applies everywhere.)*
+- **Blocked by (confirm present):** Implementation constructor calls _disableInitializers(); _authorizeUpgrade is owner-gated; no selfdestruct or arbitrary delegatecall in the implementation. *(The selfdestruct-brick half of this chain is neutralized by EIP-6780 — only a same-tx-as-creation destroy deletes code — on post-Cancun EVM AND on TRON since 2026-04-10 (network parameter #94, enabled by governance Proposal #106; GreatVoyage-v4.8.1); the re-init/hijack half applies everywhere.)*
 - **Where it applies:** UUPS implementation contracts
 
 ### delegatecall -> storage collision -> owner overwrite  ·  _upgrade_

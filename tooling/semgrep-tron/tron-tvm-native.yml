@@ -101,6 +101,9 @@ rules:
       - pattern: msg.value / 1 ether
       - pattern: msg.value * 1000000000000000000
       - pattern: msg.value / 1000000000000000000
+      - pattern: msg.value * 10**18
+      - pattern: 10**18 * msg.value
+      - pattern: msg.value / 10**18
 
   - id: tron-weak-randomness-tvm-constants
     languages: [solidity]
@@ -139,18 +142,22 @@ rules:
     pattern-either:
       - pattern: bytes1(0xff)
       - pattern: hex"ff"
+      - pattern: hex"FF"
 
   - id: tron-native-send-stipend
     languages: [solidity]
     severity: WARNING
     message: >
-      `.send()`/`.transfer()` native value send assumes the EVM 2300-gas stipend. TVM meters
-      Energy differently — the stipend assumption and revert-on-failure behavior may differ.
-      VERIFY the recipient path and prefer a checked low-level call with reentrancy guards.
+      `.send()`/`.transfer()` native value send. The 2300-gas stipend maps 1:1 on TVM (2300
+      Energy, revert-on-failure identical, and SSTORE >= 5000 so it still blocks reentrancy).
+      The real TVM divergence is the Dynamic Energy Model (TIP-491): opcodes in a "popular"
+      (high energy_factor) RECIPIENT contract are billed at a multiplier, so `transfer()` to
+      such a contract can hit out-of-energy where identical EVM code passes. VERIFY the
+      recipient can't be pushed high-factor to grief this path; prefer a checked low-level call.
     metadata: { category: security, tron: true, confidence: LOW, subcategory: [audit] }
     pattern-either:
       - pattern: $X.send(...)
-      - pattern: payable($X).transfer(...)
+      - pattern: $X.transfer($V)
 
   - id: tron-tx-origin-auth
     languages: [solidity]
@@ -162,7 +169,6 @@ rules:
     pattern-either:
       - pattern: tx.origin == $X
       - pattern: $X == tx.origin
-      - pattern: require(tx.origin == $X)
 
   - id: tron-ecrecover-usage
     languages: [solidity]
@@ -180,7 +186,7 @@ rules:
     languages: [solidity]
     severity: INFO
     message: >
-      selfdestruct/suicide in scope. TRON adopted EIP-6780 (mainnet 2026-04-10, param #94):
+      selfdestruct/suicide in scope. TRON adopted EIP-6780 (mainnet 2026-04-10; network param #94, enabled by Proposal #106):
       post-creation self-destruct no longer deletes code/storage, only transfers balance.
       VERIFY the brick/force-feed assumptions against the target chain's #94 state.
     metadata: { category: security, tron: true, confidence: LOW, subcategory: [audit] }

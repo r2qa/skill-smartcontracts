@@ -16,7 +16,7 @@ Clone directly into your Claude Code skills directory so `git pull` updates the 
 git clone git@github.com:r2qa/skill-smartcontracts.git ~/.claude/skills/skill-smartcontracts
 ```
 
-Claude Code auto-discovers it (the skill's `name:` is `reviewing-smart-contracts`). It triggers on *"audit this contract"*, *"review for vulnerabilities"*, *"security review"*, or invoke it with `/skills`.
+Claude Code auto-discovers it (the skill's `name:` is `skill-smartcontracts`). It triggers on *"audit this contract"*, *"review for vulnerabilities"*, *"security review"*, or invoke it with `/skills`.
 
 **Install the toolchain once per machine:**
 
@@ -47,7 +47,7 @@ The repo ships **no keys** — everyone uses their own. `.zshenv` (not `.zshrc`)
 | Path | What it is | Why |
 |---|---|---|
 | `SKILL.md` | The skill itself: 9 non-negotiable gates, scope modes, hybrid-tooling policy, **actor/attacker-role classification**, severity rubric, red flags, deliverable + acceptance. | The entry point Claude loads. Encodes the *process* so reviews are consistent and evidence-first, not vibes. |
-| `vulnerable-functions.md` | ~110 high-risk **function patterns** across 14 categories (token, access-control, lending, AMM/DEX, stablecoin, oracle, proxy, bridge, liquid-staking, governance, signature, math, general, **tvm-native**), each with a grep-able pattern + concrete check. | The "what to locate" checklist. `tvm-native` is the TRON delta EVM checklists miss. |
+| `vulnerable-functions.md` | ~175 high-risk **function patterns** across 21 categories (token, access-control, lending, AMM/DEX, stablecoin, oracle, proxy, bridge, liquid-staking, governance, signature, math, general, **tvm-native**), each with a grep-able pattern + concrete check. | The "what to locate" checklist. `tvm-native` is the TRON delta EVM checklists miss. |
 | `vulnerable-chains.md` | 52 multi-step **exploit compositions** (reentrancy variants, flash-loan→oracle→borrow, share inflation, bridge-mint, proxy takeover, governance, MEV, rounding, DoS, fake-TRC-10 drain…), each with the invariant/guard whose presence blocks it. | Bugs that only appear across functions. You confirm the guard *exists*, rather than trying to prove exploitability. |
 | `report-template.md` | Client-acceptance-ready per-address report template with a pre-submission acceptance checklist, actor column, and a Centralization (§5b) section. | Standardizes deliverables so reports get accepted; separates real vulns from by-design centralization. |
 | `tooling/bootstrap.sh` | One-shot workstation setup (compilers, analyzers, fuzzers, decompiler, TronBox, API-key template). | So the skill's "tool absent → install it" policy actually holds. |

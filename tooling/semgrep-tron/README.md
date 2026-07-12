@@ -5,7 +5,7 @@ A small custom ruleset that turns the `tvm-native` checklist (in
 inventory hotspots**. It complements — does not replace — the stock DeFi ruleset:
 
 ```bash
-semgrep --config p/smart-contracts        <src>   # Decurity — known-exploit patterns
+semgrep --config "$AUDIT_HOME/semgrep-smart-contracts/solidity/security"  <src>   # Decurity (pinned local clone)
 semgrep --config tooling/semgrep-tron/    <src>   # this — TRON/TVM extensions
 ```
 

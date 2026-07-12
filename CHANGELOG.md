@@ -1,6 +1,27 @@
 # Changelog
 
-All notable changes to the `reviewing-smart-contracts` skill.
+All notable changes to the `skill-smartcontracts` skill.
+
+## [0.3.1] — external Fable-5 review (primary-source verified)
+
+### Fixed (factual — verified on-chain / against TRON docs)
+- **USDD is 18 decimals, not 6** (high). The checklist said "USDT/USDD are 6"; on-chain `decimals()` = **6 for USDT, 18 for USDD** (both legacy `TPYmHEhy…` and USDD 2.0 `TXDk8m…`). Fixed all 4 mentions — this was a 1e12x scaling error. Always read `decimals()` on-chain.
+- **Stake 2.0 delegation lock is OPTIONAL, unbonding delay is a chain parameter** (medium). The 3-day lock only applies with `lock=true` (default 3d/86400 blocks, TIP-542-adjustable up to ~30d via param #78); **un-locked delegation is revocable immediately → a mid-execution energy-starvation DoS**, not a guaranteed window. Unfreeze delay is `getchainparameters` (~14d mainnet, 1d Nile), not a constant.
+- **Precompile `0x03`** = TIP-272 "TwiceHash" (NOT plain double-SHA256, NOT RIPEMD160 — real RIPEMD160 is at `0x20003`).
+- **EIP-6780**: `#94` is the network *parameter* id; the governance *proposal* that enabled it was **#106** (effective 2026-04-10). Reworded across checklists + semgrep.
+- **`.transfer`/`.send` 2300 stipend maps 1:1** on TVM (SSTORE ≥ 5000, reentrancy-guard still holds); the real divergence is the **Dynamic Energy Model (TIP-491)** — a high-`energy_factor` recipient can OOG. `tron-native-send-stipend` message reframed.
+- **crytic-compile evm-version trap** re-explained: it forwards **Foundry's default `evm_version`** (osaka on Foundry ≥1.6; also prague/cancun) — it does not hardcode osaka. Fix (pin via `foundry.toml`) unchanged.
+- **TronBox memory-event false-PASS** softened to "observed" (not doc-confirmed).
+
+### Fixed (tooling / semgrep)
+- `tron-native-value-decimals` now catches `10**18` forms; `tron-native-send-stipend` catches 1-arg `$X.transfer($V)` (no FP on 2-arg ERC-20); `tron-create2-eth-prefix` catches `hex"FF"`; dropped the dead `require(tx.origin==$X)` pattern. Semgrep negatives now 5 across 4 rules.
+- get-source.sh: added Compound **Unitroller** resolution (`comptrollerImplementation()` `0xbb82aa5e`) so JustLend's comptroller logic is fetched, not the shell; removed a dead `if False else` in review-ledger.sh; corrected the fixture's `--test` header. (Address-validation, mainnet-hardcode, and `origin_energy_limit` gaps Fable flagged were already fixed in 0.3.0.)
+
+### Fixed (docs / consistency)
+- Discoverability: added TRON triggers (`T…` address, TronScan, TRC-20/TRC-10, unverified/bytecode-only) to the skill `description`.
+- Fixed the `semgrep-tron/README.md` run example that showed the forbidden `p/smart-contracts` (now the pinned `solidity/security` clone); corrected stale counts (`~175 patterns / 21 categories`, `61 chains`); aligned the `reviewing-smart-contracts` → `skill-smartcontracts` name across README/CHANGELOG/bootstrap.
+
+**Deferred:** local java-tron differential harness; SR-voting-reward correctness section; gate-1 sub-step split. **Rejected (again):** removing the heredoc write-fallback / install-it policy.
 
 ## [0.3.0] — external Codex code-review fixes (verified)
 

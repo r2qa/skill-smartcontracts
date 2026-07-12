@@ -1,4 +1,5 @@
-// Test fixture for tron-tvm-native.yml — run: semgrep --test tooling/semgrep-tron/
+// Test fixture for tron-tvm-native.yml. NOTE: `semgrep --test` crashes on 1.168.0 (path-match
+// bug) — smoke-test with a direct scan:  semgrep --config tron-tvm-native.yml tron-tvm-native.sol
 // Vulnerable/hotspot contract: every TRON-native construct below MUST be flagged.
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.18;
