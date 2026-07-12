@@ -1,0 +1,6 @@
+{
+  "name": "tvm-harness",
+  "private": true,
+  "description": "TVM differential harness driver (TronWeb)",
+  "dependencies": { "tronweb": "4.4.0" }
+}

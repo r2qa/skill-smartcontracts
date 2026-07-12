@@ -43,6 +43,8 @@ This table is the contract between `bootstrap.sh` and `SKILL.md`: **every tool i
 - **`get-source.sh <address>`** — verified-source fetch + attestation + recompile-match + proxy resolution (gate 1). See its header.
 - **`review-ledger.sh check|record <address>`** — **dedup guard** (gate 1 / terminal state): records each review's `code_hash` (+ proxy impl hash), skill `VERSION`, and date to `$FINDINGS_DIR/.review-ledger.json`, and on `check` tells the skill to SKIP a redundant re-audit — unless the contract changed, the skill `VERSION` bumped, or `RECHECK=1`. The repo-root **`VERSION`** file is the audit-knowledge version (bump on checklist/rule/methodology changes).
 
+- **`tvm-harness/`** — a **local java-tron** sandbox (`up.sh`/`down.sh`, `differential.js`) to run a gate-7 PoC on a **real TVM** and diff it against the EVM model; upgrades an `EVM-model` PoC to `TVM-proven`. Needs Docker; TronWeb installed locally on first `npm i`. (See its `README.md`.)
+
 ## Notes
 
 - **Idempotent** — every step checks for an existing install; safe to re-run.

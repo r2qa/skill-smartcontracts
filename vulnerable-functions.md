@@ -737,7 +737,7 @@
 - **Verify:** Grep `1e18` / `ether` / `1 ether` / `wei` on any native-value path; confirm SUN (1e6) scaling; keep native-TRX math distinct from TRC-20 token math (**TRC-20 decimals VARY — USDT = 6 but USDD = 18; read `decimals()` on-chain**).
 
 ### `TVM precompiles DIVERGE at the same addresses (no revert on misuse)`
-- **Risk:** Same address, different function on TVM: `0x03` = a TRON-specific hash (**TIP-272 'TwiceHash'**, NOT RIPEMD160 — the real RIPEMD160 lives at `0x20003`, behind `allowTvmCompatibleEvm`), `0x09` = **BatchValidateSign** (NOT Blake2F), plus TRON-specific `validatemultisign`/`verifymintproof`. Ethereum assembly calling `0x03` expecting RIPEMD160 silently gets a wrong hash — no revert.
+- **Risk:** Same address, different function on TVM: `0x03` = a TRON-specific hash (**TIP-272 'TwiceHash'** = `sha256(sha256(x)[:20])` — inner sha256 truncated to 20 bytes, then sha256; NOT RIPEMD160 — real RIPEMD160 is at `0x20003` behind `allowTvmCompatibleEvm`; **verified on a live TVM node via `tooling/tvm-harness`**), `0x09` = **BatchValidateSign** (NOT Blake2F), plus TRON-specific `validatemultisign`/`verifymintproof`. Ethereum assembly calling `0x03` expecting RIPEMD160 silently gets a wrong hash — no revert.
 - **Verify:** Grep `staticcall`/`call` to `0x01..0x0a` and `precompile`; confirm each precompile's TVM meaning (not address parity); flag ecrecover/hash/pairing assembly ported from Ethereum.
 
 ### `CREATE2 / CREATE address derivation on TVM (0x41 prefix, not 0xff)`

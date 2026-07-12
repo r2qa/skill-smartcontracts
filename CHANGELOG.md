@@ -2,6 +2,15 @@
 
 All notable changes to the `skill-smartcontracts` skill.
 
+## [0.3.2] — TVM differential harness (gate 7/9 upgrade)
+
+### Added
+- **`tooling/tvm-harness/`** — a **local java-tron** sandbox (`trontools/quickstart` in Docker) to run a gate-7 PoC on a **real TVM**, not just the EVM model. `up.sh` boots the node + prints a funded account; `differential.js` (TronWeb) compiles with the TRON solc fork, deploys a probe, and diffs the on-chain result vs the EVM expectation; `down.sh` tears down. A divergence is itself a finding; a match upgrades a PoC from `EVM-model` to **`TVM-proven (re-deploy, not mainnet-state)`**. Gate 9 wired to it.
+- **Empirically validated on a live node** (`RESULT: PASS`): precompile `0x03` returns TIP-272 **TwiceHash = `sha256(sha256(x)[:20])`** (NOT RIPEMD160) — confirming both the tvm-native claim and Fable's exact formula on a real TVM; `block.difficulty`/`block.gaslimit` read `0` (TVM constants). Checklist updated with the node-verified formula.
+
+### Notes (compat learned)
+- The `trontools/quickstart` node is old java-tron: needs **TronWeb 4.x** (5.x calls `/wallet/getblock`, which 405s) and contracts compiled with **`--evm-version istanbul`** (0.8.2x default emits `PUSH0`/`0x5f`, rejected as `ILLEGAL_OPERATION`). Both are baked into the harness. Honest limit: like a testnet, it does not fork mainnet state.
+
 ## [0.3.1] — external Fable-5 review (primary-source verified)
 
 ### Fixed (factual — verified on-chain / against TRON docs)
