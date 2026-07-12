@@ -22,7 +22,7 @@ set -u -o pipefail
 SOLC_VERSIONS="${SOLC_VERSIONS:-0.5.17 0.6.12 0.7.6 0.8.19 0.8.26}"
 # Spread across the major TRON bands so get-source.sh recompile-match can reach FULL-MATCH
 # for old and new targets alike. Tags are tv_<ver> (except 0.4.25 → 0.4.25_Odyssey_v3.2.3).
-TRON_SOLC_VERSIONS="${TRON_SOLC_VERSIONS:-0.4.25 0.5.8 0.5.17 0.6.12 0.7.6 0.8.18 0.8.22 0.8.25 0.8.26 0.8.27}"
+TRON_SOLC_VERSIONS="${TRON_SOLC_VERSIONS:-0.4.25 0.5.8 0.5.12 0.5.17 0.5.18 0.6.0 0.6.12 0.6.13 0.7.6 0.8.18 0.8.20 0.8.22 0.8.25 0.8.26 0.8.27}"
 AUDIT_HOME="${AUDIT_HOME:-$HOME/audit-tools}"
 ENV_DIR="$HOME/.config/fearsoff"
 ENV_FILE="$ENV_DIR/audit.env"

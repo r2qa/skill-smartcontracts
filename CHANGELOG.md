@@ -2,6 +2,16 @@
 
 All notable changes to the `skill-smartcontracts` skill.
 
+## [0.3.4] — from a 20-contract batch sweep (2 actionable gaps closed)
+
+Ran the gate 1–3 pipeline over 20 real TRON contracts (tokens, JustLend proxies, sTRX, stables, pegged, GasFree). Pipeline held: 15 verified / 3 unverified / 2 bad-addresses correctly rejected by Base58Check; proxy resolution worked on 8 (incl. the Compound Unitroller via `comptrollerImplementation()`); dedup caught JST↔USDJ identical Tether-clone bytecode; custody correctly classified all contracts as code-governed. Two real gaps surfaced and fixed:
+
+### Fixed (get-source.sh)
+- **`NO_MATCH` false-negative on trailing on-chain data** (found on USDT-Tether). Its verified source is byte-identical to the deployed code up to the CBOR metadata marker, but the on-chain `runtimecode` has ~256 bytes appended after metadata (the token symbol + padding), which broke `strip_meta` → false `NO_MATCH`. Added a **metadata-marker code-region comparison** (`a165627a7a7230` bzzr0 / `a264697066` ipfs …): if the code before the marker matches, report **PARTIAL** ("source IS the deployed code"). **USDT NO_MATCH → PARTIAL.** No regression (WTRX PARTIAL, SUN/USD1 FULL).
+
+### Added (bootstrap.sh)
+- **5 more TRON solc forks** in the default set (`0.5.12 0.5.18 0.6.0 0.6.13 0.8.20`) — the sweep hit contracts (JustLend Unitroller 0.5.12 + impl 0.5.18, USD1 0.8.20, TUSD 0.6.0 + impl 0.6.13) whose recompile was `SKIPPED` for want of the exact fork. After adding them: **USD1 → FULL_MATCH**, Unitroller/TUSD (proxy+impl) → PARTIAL. Default is now 15 forks (`0.4.25`→`0.8.27`). (get-source already self-reports the exact missing fork on any remaining tail.)
+
 ## [0.3.3] — polish backlog (usability + TRON coverage)
 
 ### Changed

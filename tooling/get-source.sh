@@ -258,6 +258,14 @@ def mask_imm(hx, refs):
             s, l = int(r.get("start",0)), int(r.get("length",0))
             for i in range(s, min(s+l, len(b))): b[i] = 0
     return b.hex()
+def code_region(hx):
+    # the CODE up to the CBOR metadata marker (bzzr0 0.4.x / ipfs 0.5+/0.6+); robust to
+    # trailing metadata AND to extra trailing data appended to the on-chain runtimecode
+    # (e.g. TRON appends the token symbol + padding after metadata on some old contracts).
+    for m in ("a165627a7a7230", "a265627a7a7231", "a264697066", "a2646970667358"):
+        i = hx.rfind(m)
+        if i >= 0: return hx[:i]
+    return ""
 nimm = sum(len(v) for v in immrefs.values()) if immrefs else 0
 kh = subprocess.run(["cast","keccak","0x"+dep], capture_output=True, text=True).stdout.strip().lower().replace("0x","")
 if kh and kh == onchain:
@@ -268,6 +276,8 @@ elif runtime and strip_meta(dep) and strip_meta(dep) == strip_meta(runtime):
     finish("PARTIAL", f"  recompile=PARTIAL-MATCH (solc {ver} {kind}; only trailing metadata differs) — source is very likely the deployed one, but NOT a full byte-proof")
 elif immrefs and runtime and strip_meta(mask_imm(dep,immrefs)) and strip_meta(mask_imm(dep,immrefs)) == strip_meta(mask_imm(runtime,immrefs)):
     finish("PARTIAL", f"  recompile=PARTIAL-MATCH (solc {ver} {kind}; {nimm} immutable region(s) masked + trailing metadata differs) — source likely the deployed one, not a full byte-proof")
+elif runtime and code_region(dep) and code_region(dep) == code_region(runtime):
+    finish("PARTIAL", f"  recompile=PARTIAL-MATCH (solc {ver} {kind}; CODE region byte-identical up to the CBOR metadata marker, only metadata / trailing on-chain data differs) — source IS the deployed code, not a full byte-proof")
 else:
     note = "" if kind=="tron" else " — used STOCK solc; the TRON solc fork is needed for exact bytes"
     finish("NO_MATCH", f"  recompile=NO-MATCH{note} (review source/settings, or get the exact TRON compiler) — source NOT authoritative")
