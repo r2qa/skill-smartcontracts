@@ -2,6 +2,19 @@
 
 All notable changes to the `skill-smartcontracts` skill.
 
+## [0.3.3] — polish backlog (usability + TRON coverage)
+
+### Changed
+- **Gate 1 split into numbered sub-steps** (1.1 Fetch → 1.2 Attest → **1.3 ⛔ Dedup guard** → 1.4 Build) so the "STOP / skip gates 2–9" branch is prominent instead of buried in a paragraph (Fable F).
+
+### Added
+- **`tvm-native`: SR voting-reward accounting** (sTRX / liquid-staking-TRX) — VoteWitness + WithdrawBalance reward distribution: share/rate must update from the *actually-claimed* reward before mint/burn, include pending-unclaimed, and can't let a just-deposited actor capture pre-deposit rewards (a TRON-native reward source EVM checklists miss).
+- **`token`: USDT-TRON admin powers** — `destroyBlackFunds` (confiscation, not just freeze), `deprecate` (live redirect of an "immutable" token), issue/redeem — distinct from generic blacklist/pause; any USDT integrator inherits this trust surface.
+- **On-chain randomness note**: TRON's 27 SRs produce blocks in a deterministic rotation → `block.timestamp`/`number`/`blockhash`/producer are attacker-predictable (weaker than PoW/PoS), not just `block.difficulty`.
+- **audit-tooling JSON discipline** (gate 2): emit `evidence/tool-run.json` (per-tool `{command, version, ruleset_commit, result_count, status, fallback, promoted_findings}`) so coverage is machine-auditable and "we ran X" is falsifiable (Codex #5).
+
+**Deferred (low-value / big reorg):** splitting the checklists into a `references/tron/` tree with a TOC.
+
 ## [0.3.2] — TVM differential harness (gate 7/9 upgrade)
 
 ### Added
