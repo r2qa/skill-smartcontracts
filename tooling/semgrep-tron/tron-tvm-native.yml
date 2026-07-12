@@ -168,9 +168,11 @@ rules:
     languages: [solidity]
     severity: INFO
     message: >
-      ecrecover in scope. VERIFY the result is checked against address(0) (invalid sig),
-      signature malleability (low-s / v) is handled, and on TVM the 20-byte recovered word is
-      reconciled with 21-byte 0x41 on-chain identity + correct chainid (0x2b6653dc).
+      ecrecover in scope. VERIFY the result is checked against address(0) (invalid sig) and
+      signature malleability (low-s / v) is handled. NOTE: inside Solidity an address is 20
+      bytes, so an in-contract `ecrecover(...) == addr` compare is normal — the 21-byte 0x41
+      form matters only at the Base58/SDK/cross-chain SERIALIZATION boundary; use TRON chainid
+      0x2b6653dc in the EIP-712 domain.
     metadata: { category: security, tron: true, confidence: LOW, subcategory: [audit] }
     pattern: ecrecover(...)
 
@@ -209,8 +211,10 @@ rules:
     languages: [solidity]
     severity: INFO
     message: >
-      CREATE2 deployment (new C{salt:...}). TVM derives the address with a 0x41 prefix, NOT
-      Ethereum's 0xff — any off-chain/precomputed counterfactual address must use the TVM
-      formula or funds go to the wrong address.
+      CREATE2 deployment (new C{salt:...}). The TRON compiler emits the CORRECT on-chain
+      address (0x41 scheme) for this high-level form — the deploy itself is fine. The risk is
+      any OFF-CHAIN / cross-contract PRECOMPUTE of this address (JS/SDK/computeAddress or a
+      hand-rolled preimage) that uses Ethereum's 0xff formula → predicts the WRONG address.
+      VERIFY every off-chain derivation of this salt/address uses the TVM 0x41 scheme.
     metadata: { category: security, tron: true, confidence: LOW, subcategory: [audit] }
     pattern: "new $C{salt: $S}(...)"

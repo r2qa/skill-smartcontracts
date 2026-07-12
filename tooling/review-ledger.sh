@@ -75,9 +75,11 @@ if (mine.get("impl_hash") or "-") != (ih or "-"):
 if mine.get("skill_version") != ver:
     print(f"SKILL-UPDATED — reviewed under skill v{mine.get('skill_version','?')}, now v{ver}; PROCEED (new knowledge may surface new findings)")
     sys.exit(0)
-print(f"REVIEWED-CURRENT — already audited {mine.get('date','?')} under skill v{ver} "
-      f"(code_hash {ch[:10]}, unchanged); report: {mine.get('report','?')}. "
-      f"SKIP unless the user explicitly asks to re-check (RECHECK=1).")
+print(f"REVIEWED-CURRENT — static code review already done {mine.get('date','?')} under skill "
+      f"v{ver} (code_hash {ch[:10]}, unchanged); report: {mine.get('report','?')}. "
+      f"REUSE the static findings + SKIP code-analysis gates (2,4,5,6,7) — but STILL re-run the "
+      f"LIVE-STATE gates (3 custody/permissions, 8 deployment/markets/chain-params) and re-assess "
+      f"realized severity. Full re-review only if RECHECK=1.")
 sys.exit(10)
 PY
     exit $?

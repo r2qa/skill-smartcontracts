@@ -2,6 +2,31 @@
 
 All notable changes to the `reviewing-smart-contracts` skill.
 
+## [0.3.0] — external Codex code-review fixes (verified)
+
+### Fixed (get-source.sh hardening — P0 tool-security)
+- **Strict Base58Check address validation** (charset + length + `0x41` version + double-SHA256 checksum) before the address touches a URL body / path / python string — the old glob only checked the 2nd char + length. Rejected: bad-checksum, path-traversal (`…/x`), and injection (`T"; rm …`) — all verified.
+- **Path containment** for TronScan-supplied filenames (strip drive/leading-slash + `..`/`.` segments, verify resolved path stays under `src/`) — an absolute/`..` filename can no longer escape the output dir.
+- **`python -c` interpolation removed** (runtime read now via stdin+argv, not `$OUT` string-interp).
+- **Clean-on-rerun** — a re-fetch wipes stale `src/`/`impl/`/`decompiled/` instead of mixing.
+- **Network-selectable endpoints** — `TRON_NETWORK=mainnet|nile|shasta` (+ `TRON_TG_API`/`TRON_TS_API` overrides); the proxy JSON-RPC now uses the selected endpoint (was mainnet-hardcoded).
+- **`optimizer_runs=0` bug** — `int(runs or 200)` turned a real `runs=0` into 200 (wrong bytecode); now handled correctly.
+- **Attestation grade split** — the immutable-masked case is now its own status **`IMMUTABLE_TEMPLATE_MATCH`** (byte-identical except construction-set immutables) instead of being labelled `FULL_MATCH`; both remain `source_authoritative`, and linked-library non-relinking is disclosed.
+
+### Fixed (TRON-logic accuracy)
+- **Stake 2.0**: the unbonding delay is a **governance chain parameter** (`getchainparameters`; ~14d mainnet, 1d Nile, adjustable) — not a hardcoded 14-day constant; and the delegation **lock is OPTIONAL** (`lock` flag + configurable `lock_period`; immediate undelegate when unlocked) — not a mandatory 3-day lock.
+- **ecrecover / 21-byte identity**: reframed — inside Solidity an `address` is 20 bytes, so an in-contract `ecrecover(...) == addr` compare is normal; the `0x41` 21-byte form matters only at the **Base58/SDK/cross-chain serialization boundary** (checklist entry + `tron-ecrecover-usage` message corrected).
+- **Account-permission custody**: scoped to **privileged key-controlled accounts** (owner/admin/deployer/treasury); a **contract account has no key** and is code-governed — do not run the permission-graph check on it (checklist entry + gate 3 corrected).
+- **`tron-create2-new-salt`**: message corrected — the high-level `new C{salt:}` deploy address is compiler-correct on TVM; the risk is only **off-chain/precompute** using Ethereum's `0xff`.
+- **Vyper on TVM** flagged experimental (EVM-bytecode-compat only; Solidity is TRON's supported path).
+
+### Added (dedup guard fix + TVM execution limits)
+- **Dedup guard no longer skips live state.** `REVIEWED-CURRENT` now means *reuse the STATIC findings and skip code-analysis gates (2,4,5,6,7)* — but the **live-state gates (3 custody/permissions, 8 deployment/markets/chain-params) are re-run every time**, and realized severity re-assessed (code identity ≠ frozen exploitability). SKILL.md + `review-ledger.sh` message updated.
+- **3 new `tvm-native` entries**: 64-deep call-stack + per-tx CPU-time (`getMaxCpuTimeOfOneTx`) → `OUT_OF_TIME`/full-`fee_limit`-loss DoS; Dynamic Energy `energy_factor`/penalty; deploy-time system params (`consume_user_resource_percent`/`origin_energy_limit`/`origin_address`) invisible in Solidity.
+- **Semgrep negatives** expanded (5 across 4 rules, was 2 for 1): safe `msg.sender` auth, ERC20 `.transfer`, valueless `.call`.
+
+**Deferred (told the user):** local java-tron/TVM differential harness (mark Foundry/Halmos/Echidna PoCs `EVM-model` — already noted in gate 9); splitting the checklists into `references/tron/`; audit-tooling JSON-artifact discipline. **Rejected:** removing the heredoc deliverable-write fallback and the install-it-not-skip-it policy (both intentional).
+
 ## [Unreleased]
 
 ### Added (dedup guard — don't audit the same contract twice)

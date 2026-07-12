@@ -101,3 +101,24 @@ contract TronNativeOps {
         return address(x);
     }
 }
+
+// Negative cases (batch 2) — safe variants that must NOT fire.
+contract SafeVariants {
+    address owner;
+    mapping(address=>uint256) balanceOf;
+    // msg.sender auth — NOT tx.origin — must NOT fire tron-tx-origin-auth
+    function ok_auth() external view returns (bool) {
+        // ok: tron-tx-origin-auth
+        return msg.sender == owner;
+    }
+    // ordinary ERC20 transfer — not payable().transfer / .send — must NOT fire native-send-stipend
+    function ok_erc20(address token, address to, uint256 v) external {
+        // ok: tron-native-send-stipend
+        IERC20(token).transfer(to, v);
+    }
+    // low-level call WITHOUT value — must NOT fire tron-lowlevel-call-value
+    function ok_call(address t, bytes calldata d) external {
+        // ok: tron-lowlevel-call-value
+        (bool s,) = t.call(d); require(s);
+    }
+}

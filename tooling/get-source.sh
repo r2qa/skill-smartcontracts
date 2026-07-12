@@ -20,18 +20,41 @@ set -uo pipefail
 [ -f "$HOME/.config/fearsoff/audit.env" ] && source "$HOME/.config/fearsoff/audit.env"
 
 ADDR="${1:?usage: get-source.sh <T-address> [outdir]}"
-# validate the address BEFORE it reaches a POST body or a path — blocks JSON injection and
-# path traversal, and keeps proxy base58-decode well-defined. Base58 T-address, 34 chars.
-case "$ADDR" in
-  T[1-9A-HJ-NP-Za-km-z]*) [ "${#ADDR}" -eq 34 ] || { echo "FATAL: '$ADDR' is not a 34-char base58 T-address" >&2; exit 2; } ;;
-  *) echo "FATAL: address must be a base58 T-address (got '$ADDR'); hex 0x41… is not supported here" >&2; exit 2 ;;
-esac
+# STRICT Base58Check validation BEFORE the address touches a URL body, a filesystem path, or a
+# python string: full charset + 34 length + 0x41 version byte + double-SHA256 checksum. A
+# malformed/hostile address (quotes, slashes, shell/JSON metachars) is rejected right here.
+python3 - "$ADDR" <<'PY' || { echo "FATAL: '$ADDR' is not a valid Base58Check TRON (T...) address" >&2; exit 2; }
+import sys, hashlib
+a = sys.argv[1]
+ALPH = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'
+if len(a) != 34 or a[0] != 'T': sys.exit(1)
+n = 0
+for c in a:
+    if c not in ALPH: sys.exit(1)
+    n = n * 58 + ALPH.index(c)
+try: b = n.to_bytes(25, 'big')
+except OverflowError: sys.exit(1)
+if b[0] != 0x41: sys.exit(1)
+chk = hashlib.sha256(hashlib.sha256(b[:21]).digest()).digest()[:4]
+sys.exit(0 if chk == b[21:] else 1)
+PY
 OUT="${2:-${FINDINGS_DIR:-./findings}/$ADDR/src-fetched}"
 CACHE="${TRON_SRC_CACHE:-$HOME/.cache/fearsoff/tron-src}"
 TSN="${TRONSCAN_API_KEY:-}"; TG="${TRONGRID_API_KEY:-}"
-TS_API="https://apilist.tronscanapi.com"; TG_API="https://api.trongrid.io"
+# network-selectable endpoints (default mainnet) — chain params/verified-source differ per net.
+NET="${TRON_NETWORK:-mainnet}"
+case "$NET" in
+  mainnet) TG_API="${TRON_TG_API:-${TRONGRID_MAINNET:-https://api.trongrid.io}}"; TS_API="${TRON_TS_API:-${TRONSCAN_API:-https://apilist.tronscanapi.com}}" ;;
+  nile)    TG_API="${TRON_TG_API:-${TRONGRID_NILE:-https://nile.trongrid.io}}";   TS_API="${TRON_TS_API:-https://nileapi.tronscan.org}" ;;
+  shasta)  TG_API="${TRON_TG_API:-${TRONGRID_SHASTA:-https://api.shasta.trongrid.io}}"; TS_API="${TRON_TS_API:-https://shastapi.tronscan.org}" ;;
+  *) echo "FATAL: unknown TRON_NETWORK='$NET' (mainnet|nile|shasta); or set TRON_TG_API / TRON_TS_API explicitly" >&2; exit 2 ;;
+esac
+[ "$NET" != mainnet ] && echo "NOTE: TRON_NETWORK=$NET — confirm the verified-source endpoint ($TS_API) serves this testnet; override via TRON_TS_API if needed" >&2
 [ -z "$TSN" ] && echo "WARN: TRONSCAN_API_KEY unset — requests rate-limited; verified source may be stripped" >&2
 command -v cast >/dev/null 2>&1 || { echo "FATAL: 'cast' (foundry) required for code_hash attestation" >&2; exit 2; }
+# fresh output — a re-run must NOT mix stale source/impl/decompiled with the new fetch
+rm -rf "$OUT/src" "$OUT/impl" "$OUT/decompiled" 2>/dev/null
+rm -f "$OUT"/_info.json "$OUT"/_gci.json "$OUT"/runtime.hex "$OUT"/compiler.json "$OUT"/abi.json 2>/dev/null
 mkdir -p "$OUT"
 
 # 1) verified source + compiler settings + abi (may be empty if unverified)
@@ -45,7 +68,12 @@ curl -sS --max-time 30 -X POST "$TG_API/wallet/getcontractinfo" \
   -H "TRON-PRO-API-KEY: $TG" -H 'Content-Type: application/json' \
   --data "{\"value\":\"$ADDR\",\"visible\":true}" > "$OUT/_gci.json" 2>/dev/null || true
 
-RUNTIME=$(python3 -c "import json;print((json.load(open('$OUT/_gci.json')).get('runtimecode') or '').strip().lower())" 2>/dev/null || true)
+RUNTIME=$(python3 - "$OUT" <<'PY' 2>/dev/null || true
+import sys, json
+try: print((json.load(open(sys.argv[1] + "/_gci.json")).get("runtimecode") or "").strip().lower())
+except Exception: print("")
+PY
+)
 CODE_HASH=""
 if [ -n "$RUNTIME" ]; then
   printf '%s' "$RUNTIME" > "$OUT/runtime.hex"
@@ -98,9 +126,17 @@ meta["recompile_status"] = "PENDING"             # overwritten by the recompile 
 
 if status == 2 and code:
     srcdir = f"{out}/src"; os.makedirs(srcdir, exist_ok=True)
+    srcreal = os.path.realpath(srcdir)
     for c in code:
-        fn = (c.get("name") or "Unnamed.sol").replace("..", "_")
+        # PATH CONTAINMENT: a TronScan-supplied filename is untrusted — strip drive/leading
+        # slashes and any '..'/'.' segments, then verify the resolved path stays under srcdir.
+        raw_fn = (c.get("name") or "Unnamed.sol").replace("\\", "/")
+        parts = [seg for seg in raw_fn.split("/") if seg not in ("", ".", "..")]
+        fn = "/".join(parts) or "Unnamed.sol"
         p = os.path.join(srcdir, fn)
+        if not (os.path.realpath(os.path.dirname(p)) == srcreal
+                or os.path.realpath(os.path.dirname(p)).startswith(srcreal + os.sep)):
+            open(f"{out}/_rejected_path.log", "a").write(raw_fn + "\n"); continue
         if "/" in fn: os.makedirs(os.path.dirname(p), exist_ok=True)
         try: open(p, "w").write(base64.b64decode(c.get("code","")).decode("utf-8","replace"))
         except Exception as e: open(p+".b64err","w").write(str(e))
@@ -149,7 +185,7 @@ except Exception: runtime = ""
 def finish(status, msg):
     # persist machine-readable recompile state so the audit can GATE on it
     meta["recompile_status"] = status                 # FULL_MATCH | PARTIAL | NO_MATCH | SKIPPED
-    meta["source_authoritative"] = (status == "FULL_MATCH")
+    meta["source_authoritative"] = status in ("FULL_MATCH", "IMMUTABLE_TEMPLATE_MATCH")
     json.dump(meta, open(f"{out}/compiler.json","w"), indent=2)
     print(msg); sys.exit(0)
 m = re.search(r'(\d+\.\d+\.\d+)', comp)
@@ -179,7 +215,7 @@ for root,_,files in os.walk(srcdir):
         if f.endswith(".sol"):
             rel = os.path.relpath(os.path.join(root,f), srcdir)
             sources[rel] = {"content": open(os.path.join(root,f), encoding="utf-8", errors="replace").read()}
-settings = {"optimizer": {"enabled": bool(meta.get("optimizer")), "runs": int(meta.get("optimizer_runs") or 200)},
+settings = {"optimizer": {"enabled": bool(meta.get("optimizer")), "runs": (200 if meta.get("optimizer_runs") in (None, "") else int(meta.get("optimizer_runs")))},
             "outputSelection": {"*": {"*": ["evm.deployedBytecode"]}}}   # full object -> also immutableReferences
 evm = meta.get("evm_version")
 if evm and evm != "default": settings["evmVersion"] = evm
@@ -227,7 +263,7 @@ kh = subprocess.run(["cast","keccak","0x"+dep], capture_output=True, text=True).
 if kh and kh == onchain:
     finish("FULL_MATCH", f"  recompile=FULL-MATCH (solc {ver} {kind}) — source→deployed bytecode independently verified; source IS authoritative")
 elif immrefs and runtime and len(dep)==len(runtime) and mask_imm(dep,immrefs)==mask_imm(runtime,immrefs):
-    finish("FULL_MATCH", f"  recompile=FULL-MATCH (solc {ver} {kind}; {nimm} immutable region(s) masked — set at construction, metadata intact) — source IS authoritative")
+    finish("IMMUTABLE_TEMPLATE_MATCH", f"  recompile=IMMUTABLE_TEMPLATE_MATCH (solc {ver} {kind}; runtime is byte-identical EXCEPT {nimm} masked immutable region(s), metadata intact) — NOT a literal keccak match, but the code is authoritative (immutables are construction-set values). Note: linked libraries are NOT re-linked here.")
 elif runtime and strip_meta(dep) and strip_meta(dep) == strip_meta(runtime):
     finish("PARTIAL", f"  recompile=PARTIAL-MATCH (solc {ver} {kind}; only trailing metadata differs) — source is very likely the deployed one, but NOT a full byte-proof")
 elif immrefs and runtime and strip_meta(mask_imm(dep,immrefs)) and strip_meta(mask_imm(dep,immrefs)) == strip_meta(mask_imm(runtime,immrefs)):
@@ -241,9 +277,10 @@ fi
 # 5) proxy resolution: if this is a proxy, resolve the implementation and fetch its source too
 #    (multi-hop: proxy -> beacon -> impl, or nested proxies, up to 3 levels)
 if [ "${GETSRC_DEPTH:-0}" -lt 3 ]; then
-IMPL_LINE=$(python3 - "$ADDR" <<'PY' 2>/dev/null || true
+IMPL_LINE=$(python3 - "$ADDR" "$TG_API" <<'PY' 2>/dev/null || true
 import sys, os, json, urllib.request, hashlib
 addr = sys.argv[1]; tg = os.environ.get("TRONGRID_API_KEY","")
+tg_api = (sys.argv[2] if len(sys.argv) > 2 else "https://api.trongrid.io").rstrip("/")
 ALPH='123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'
 try:
     num=0
@@ -251,7 +288,7 @@ try:
     evm20 = num.to_bytes(25,'big')[1:21].hex()
 except Exception: sys.exit(0)
 def rpc(method, params):
-    req = urllib.request.Request("https://api.trongrid.io/jsonrpc",
+    req = urllib.request.Request(tg_api + "/jsonrpc",
         data=json.dumps({"jsonrpc":"2.0","method":method,"params":params,"id":1}).encode(),
         headers={"Content-Type":"application/json","TRON-PRO-API-KEY":tg})
     return json.load(urllib.request.urlopen(req, timeout=20)).get("result")
