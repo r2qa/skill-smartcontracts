@@ -4,6 +4,15 @@ All notable changes to the `reviewing-smart-contracts` skill.
 
 ## [Unreleased]
 
+### Added (best-in-class checklist expansion)
+- **8 new first-class checklist sections** in `vulnerable-functions.md` (110→173 patterns, 21 categories): `erc4626-vault`, `staking-rewards` (MasterChef/Synthetix/gauge/bribe), `perps-derivatives`, `account-abstraction-4337`, `eip-7702`, `intents-solvers` (Permit2/CoW/UniswapX), `cross-chain-messaging` (LayerZero/CCIP/Wormhole/Axelar), `modular-proxy-diamond` (EIP-2535/1167/beacon/ERC-7201). Each entry is concrete + grep-able with the real mitigation; grounded in real incidents (Sonne, Mango $114M, Nomad, Synthetix solvency require). **TVM honesty:** AA/7702/Permit2 flagged EVM-mainly with "verify TVM support" caveats; LayerZero noted live on TRON; CREATE2 `0x41` / delegatecall-token-drop cross-referenced to `tvm-native`.
+- **9 new exploit chains** in `vulnerable-chains.md` (52→61): vault strategy-mark inflation, MasterChef stake==reward drain, Synthetix rate-dilution, perp oracle-collateral inflation, perp self-liquidation, 4337 paymaster drain, 7702 delegate sweep, Permit2 witness-less reuse, cross-chain message forgery.
+- **`checklist-ids-and-crosswalk.md`** — stable `VF-<SECTION>-NN` / `VC-<FAMILY>-NN` ID scheme (cite exact items in findings + coverage.md) and a web-verified crosswalk to OWASP SCSVS (11 control groups, with the SCSVS-ORACLE=arithmetic quirk) and EEA EthTrust v3 (March 2025). TVM-native flagged as out-of-scope of both standards (a real delta + differentiator).
+
+### Improved (get-source.sh)
+- **Immutables-aware recompile:** requests full `deployedBytecode` (with `immutableReferences`), masks the immutable byte-ranges (set at construction, legitimately differ from the compiled placeholder) so an immutable-bearing contract can still reach **FULL_MATCH** (metadata intact) instead of collapsing to PARTIAL.
+- **Multi-hop + beacon proxy resolution:** adds the EIP-1967 beacon slot (`0xa3f0…3d50` → `beacon.implementation()`) and raises the recursion limit to 3 hops (proxy→beacon→impl / nested proxies); logs the resolution method. Validated live: USDD recompile=FULL-MATCH via the newly-installed `tron-solc-0.5.8` fork.
+
 ### Fixed (external Fable review, verified)
 - **get-source.sh robustness (High).** `curl` now uses `--fail` and the parser distinguishes an **API error** (403 / rate-limit / no `data` object → exit 2) from a genuinely **unverified** contract (exit 3) — previously an API hiccup was silently reported as "no source," pushing the auditor to the bytecode branch. Added strict **T-address validation** (blocks JSON-injection into the POST body and path traversal in the output dir). Removed dead `vbyte` (parsed, never used — implied a source↔bytecode check that didn't exist).
 - **Decurity pin is now actually used (High).** Gate 2 previously ran `semgrep --config p/smart-contracts` (floating registry) while `bootstrap.sh` cloned Decurity separately — so the pin did nothing and the clone was dead weight. Gate 2 now runs the **pinned local clone** (`$AUDIT_HOME/semgrep-smart-contracts/solidity`).

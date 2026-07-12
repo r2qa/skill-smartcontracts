@@ -180,7 +180,7 @@ for root,_,files in os.walk(srcdir):
             rel = os.path.relpath(os.path.join(root,f), srcdir)
             sources[rel] = {"content": open(os.path.join(root,f), encoding="utf-8", errors="replace").read()}
 settings = {"optimizer": {"enabled": bool(meta.get("optimizer")), "runs": int(meta.get("optimizer_runs") or 200)},
-            "outputSelection": {"*": {"*": ["evm.deployedBytecode.object"]}}}
+            "outputSelection": {"*": {"*": ["evm.deployedBytecode"]}}}   # full object -> also immutableReferences
 evm = meta.get("evm_version")
 if evm and evm != "default": settings["evmVersion"] = evm
 if meta.get("via_ir"): settings["viaIR"] = True
@@ -190,15 +190,20 @@ try:
     oj = json.loads(r.stdout or "{}")
 except Exception as e:
     finish("SKIPPED", f"  recompile=SKIPPED (solc failed: {str(e)[:80]}) — source NOT authoritative")
-dep = ""
+dep = ""; immrefs = {}
 for cs in (oj.get("contracts") or {}).values():
     for cname, obj in cs.items():
-        b = (obj.get("evm",{}).get("deployedBytecode",{}).get("object") or "").lower()
-        if cname == target and b: dep = b
+        dbc = obj.get("evm",{}).get("deployedBytecode",{}) or {}
+        b = (dbc.get("object") or "").lower()
+        if cname == target and b: dep = b; immrefs = dbc.get("immutableReferences") or {}
 if not dep:
-    allb = [ (obj.get("evm",{}).get("deployedBytecode",{}).get("object") or "").lower()
-             for cs in (oj.get("contracts") or {}).values() for obj in cs.values() ]
-    dep = max(allb, key=len, default="")
+    best = None
+    for cs in (oj.get("contracts") or {}).values():
+        for obj in cs.values():
+            dbc = obj.get("evm",{}).get("deployedBytecode",{}) or {}
+            b = (dbc.get("object") or "").lower()
+            if b and (best is None or len(b) > len(best[0])): best = (b, dbc.get("immutableReferences") or {})
+    if best: dep, immrefs = best
 if not dep:
     errs = [e.get("formattedMessage","") for e in oj.get("errors",[]) if e.get("severity")=="error"]
     finish("SKIPPED", "  recompile=SKIPPED (no deployedBytecode; compile error: %s) — source NOT authoritative" % (errs[0][:100] if errs else "unknown"))
@@ -206,11 +211,27 @@ def strip_meta(hx):
     try:
         n = int(hx[-4:], 16); return hx[:-(n+2)*2]
     except Exception: return hx
+def mask_imm(hx, refs):
+    # zero the immutable byte-ranges (set at CONSTRUCTION, legitimately differ from the
+    # compiled placeholder) so an immutable-bearing contract can still prove FULL identity.
+    if not refs: return hx
+    try: b = bytearray.fromhex(hx)
+    except Exception: return hx
+    for lst in refs.values():
+        for r in lst:
+            s, l = int(r.get("start",0)), int(r.get("length",0))
+            for i in range(s, min(s+l, len(b))): b[i] = 0
+    return b.hex()
+nimm = sum(len(v) for v in immrefs.values()) if immrefs else 0
 kh = subprocess.run(["cast","keccak","0x"+dep], capture_output=True, text=True).stdout.strip().lower().replace("0x","")
 if kh and kh == onchain:
     finish("FULL_MATCH", f"  recompile=FULL-MATCH (solc {ver} {kind}) — source→deployed bytecode independently verified; source IS authoritative")
+elif immrefs and runtime and len(dep)==len(runtime) and mask_imm(dep,immrefs)==mask_imm(runtime,immrefs):
+    finish("FULL_MATCH", f"  recompile=FULL-MATCH (solc {ver} {kind}; {nimm} immutable region(s) masked — set at construction, metadata intact) — source IS authoritative")
 elif runtime and strip_meta(dep) and strip_meta(dep) == strip_meta(runtime):
-    finish("PARTIAL", f"  recompile=PARTIAL-MATCH (solc {ver} {kind}; only trailing metadata/immutables differ) — source is very likely the deployed one, but NOT a full byte-proof")
+    finish("PARTIAL", f"  recompile=PARTIAL-MATCH (solc {ver} {kind}; only trailing metadata differs) — source is very likely the deployed one, but NOT a full byte-proof")
+elif immrefs and runtime and strip_meta(mask_imm(dep,immrefs)) and strip_meta(mask_imm(dep,immrefs)) == strip_meta(mask_imm(runtime,immrefs)):
+    finish("PARTIAL", f"  recompile=PARTIAL-MATCH (solc {ver} {kind}; {nimm} immutable region(s) masked + trailing metadata differs) — source likely the deployed one, not a full byte-proof")
 else:
     note = "" if kind=="tron" else " — used STOCK solc; the TRON solc fork is needed for exact bytes"
     finish("NO_MATCH", f"  recompile=NO-MATCH{note} (review source/settings, or get the exact TRON compiler) — source NOT authoritative")
@@ -218,8 +239,9 @@ PY
 fi
 
 # 5) proxy resolution: if this is a proxy, resolve the implementation and fetch its source too
-if [ "${GETSRC_DEPTH:-0}" -lt 1 ]; then
-IMPL=$(python3 - "$ADDR" <<'PY' 2>/dev/null || true
+#    (multi-hop: proxy -> beacon -> impl, or nested proxies, up to 3 levels)
+if [ "${GETSRC_DEPTH:-0}" -lt 3 ]; then
+IMPL_LINE=$(python3 - "$ADDR" <<'PY' 2>/dev/null || true
 import sys, os, json, urllib.request, hashlib
 addr = sys.argv[1]; tg = os.environ.get("TRONGRID_API_KEY","")
 ALPH='123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'
@@ -238,17 +260,24 @@ def nonzero20(v):
     h = v[-40:]
     try: return h if int(h,16)!=0 else ""
     except Exception: return ""
-impl = ""
+impl = ""; via = ""
 for s in ("0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc",   # EIP-1967 impl
           "0xc5f16f0fcc639fa48a6947836d9850f504798523bf8c9a3a87d5876cf622bcf7"):  # EIP-1822 proxiable
     try: impl = nonzero20(rpc("eth_getStorageAt", ["0x"+evm20, s, "latest"]))
     except Exception: impl = ""
-    if impl: break
+    if impl: via = "slot"; break
+if not impl:   # EIP-1967 BEACON slot -> beacon.implementation()
+    try: beacon = nonzero20(rpc("eth_getStorageAt", ["0x"+evm20, "0xa3f0ad74e5423aebfd80d3ef4346578335a9a72aeaee59ff6cb3582b35133d50", "latest"]))
+    except Exception: beacon = ""
+    if beacon:
+        try: impl = nonzero20(rpc("eth_call", [{"to":"0x"+beacon,"data":"0x5c60da1b"}, "latest"]))  # implementation()
+        except Exception: impl = ""
+        if impl: via = "beacon"
 if not impl:
-    for sel in ("0x5c60da1b",):  # implementation()
+    for sel in ("0x5c60da1b",):  # implementation() getter on the proxy itself
         try: impl = nonzero20(rpc("eth_call", [{"to":"0x"+evm20,"data":sel}, "latest"]))
         except Exception: impl = ""
-        if impl: break
+        if impl: via = "getter"; break
 if impl and impl.lower()!=evm20.lower():
     payload = b'\x41'+bytes.fromhex(impl)
     full = payload + hashlib.sha256(hashlib.sha256(payload).digest()).digest()[:4]
@@ -257,11 +286,12 @@ if impl and impl.lower()!=evm20.lower():
     for byte in full:
         if byte==0: b58='1'+b58
         else: break
-    print(b58)
+    print(f"{b58} {via}")
 PY
 )
+  IMPL="${IMPL_LINE%% *}"; IMPL_VIA="${IMPL_LINE#* }"
   if [ -n "$IMPL" ]; then
-    echo "  proxy detected → implementation $IMPL — fetching its source into $OUT/impl/"
+    echo "  proxy detected (via ${IMPL_VIA}) → implementation $IMPL — fetching its source into $OUT/impl/"
     GETSRC_DEPTH=$(( ${GETSRC_DEPTH:-0} + 1 )) bash "$0" "$IMPL" "$OUT/impl" || true
   fi
 fi

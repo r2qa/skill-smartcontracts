@@ -1,6 +1,6 @@
 # Vulnerable Call-Chains Checklist
 
-> Multi-step compositions that cause loss even when each function looks fine alone. For each: the ordered chain, the invariant/guard whose presence blocks it (confirm it exists), where it applies, and severity. 52 chains. Companion: [vulnerable-functions.md](vulnerable-functions.md).
+> Multi-step compositions that cause loss even when each function looks fine alone. For each: the ordered chain, the invariant/guard whose presence blocks it (confirm it exists), where it applies, and severity. 61 chains. Companion: [vulnerable-functions.md](vulnerable-functions.md).
 
 
 ## CRITICAL
@@ -539,6 +539,108 @@
 _Notes:_ Coverage: 52 vulnerable call-chains grouped into reentrancy (classic/cross-function/cross-contract/read-only/token-hook), oracle+flash-loan manipulation (spot-price borrow & forced-liquidation, oracle lag, Chainlink staleness/sequencer, thin TWAP, LP fair-value, v3 tick JIT), share-inflation/rounding (4626 first-depositor donation, rounding round-trips, balance-based donation, LST rate manipulation), approvals/signatures (approve-race, permit cross-chain replay, permit-griefing, generic nonce/domain replay, ECDSA malleability), governance (flash-loan takeover, no-snapshot double-vote, timelock bypass), bridges (forged proof, replay double-mint, validator-threshold, lock/mint mismatch), proxy/upgrade (uninitialized init-takeover, unprotected UUPS, storage collision, selector clash, layout reorder, arbitrary delegatecall), MEV (minOut=0 sandwich, missing deadline, protocol-swap sandwich, liquidation front-run), plus lending accrual, PSM/CDP, fee-on-transfer/non-standard-ERC20, DoS (unbounded loop, push-payment revert, force-fed ETH), tx.origin, and payable-multicall value reuse.
 
 How to use: for each chain the auditor treats the **Blocked by (confirm present)** entry as a positive checklist item — confirm the named guard EXISTS and is correct (grep the entrypoints named under **Where it applies**), rather than trying to prove exploitability. Chains are the point: each individual function can pass review while the composition loses funds, so the invariants to verify are cross-function (shared mutex, single accrual point), cross-contract (system-wide guard, conservation invariants), and temporal (past-block snapshots, deadlines, staleness windows, OSM/timelock delays).
+
+### ERC-4626 strategy-report / totalAssets spot inflation (deposit-cheap / redeem-rich)  ·  _share-inflation_
+**Chain:**
+1. A yield-vault's `totalAssets()` marks a deployed strategy position from a manipulable source (AMM reserves, `get_virtual_price`, LP spot value) rather than internal/oracle accounting
+2. Attacker flash-manipulates that source DOWN, depressing `totalAssets` and thus share price
+3. Attacker deposits assets and mints an inflated number of shares (`shares = assets * supply / totalAssets`, denominator suppressed)
+4. Attacker restores the source (releasing the manipulation), `totalAssets` snaps back UP
+5. Attacker redeems the shares against the now-higher assets-per-share, extracting other depositors' value
+
+- **Blocked by (confirm present):** `totalAssets` (and any strategy valuation inside it) derives from internal accounting or a manipulation-resistant oracle, never spot reserves / raw `get_virtual_price` / balanceOf; harvest/report swaps use oracle-derived `minOut`; deposit and redeem are priced off the same non-manipulable figure in one atomic accounting state
+- **Where it applies:** ERC-4626 yield aggregators and auto-compounders that mark strategy P&L, Yearn/Beefy-style vaults pricing LP or staked positions
+- **Severity:** HIGH (distinct from the first-depositor donation chain — this manipulates the strategy mark, not the empty-vault rounding)
+
+### MasterChef stake-token == reward-token pool drain  ·  _rounding-drain_
+**Chain:**
+1. A MasterChef-style pool uses the SAME token for staking and rewards, and computes `pendingReward`/`lpSupply` from `token.balanceOf(address(this))` instead of internal accounting
+2. The contract's balance therefore includes BOTH staked principal and the reward reserve
+3. Attacker deposits a large stake; the balance-based accounting counts the fresh principal as additional distributable reward, spiking `accRewardPerShare`
+4. Attacker (and colluding accounts) harvest/withdraw, drawing down other users' staked principal as if it were reward
+5. Later withdrawers find the pool insolvent
+
+- **Blocked by (confirm present):** Staked principal tracked in an internal variable separate from the reward reserve; `lpSupply`/`pending` never read `balanceOf(this)` when stake==reward; a deposit cannot increase any other account's claimable reward; `updatePool` accrues only from the reward reserve
+- **Where it applies:** MasterChef forks, single-asset staking pools where reward token == stake token, "stake X earn X" farms
+- **Severity:** HIGH
+
+### Synthetix reward-rate dilution / zero-rate stranding via notifyRewardAmount  ·  _rounding-drain_
+**Chain:**
+1. `notifyRewardAmount(reward)` sets `rewardRate = (reward + leftover) / rewardsDuration` and pushes `periodFinish = now + rewardsDuration`
+2. An attacker/careless distributor repeatedly calls it with a dust `reward`, each call folding remaining `leftover` into a fresh full-duration period → the per-second rate is diluted and the finish line keeps receding (stakers earn far less than intended, indefinitely)
+3. Alternatively `reward < rewardsDuration` (in token decimals) makes `rewardRate` truncate to 0, or the reward token was never actually transferred in, so `rewardRate * duration > balance` and the last claimers hit an insolvent distribution and revert
+
+- **Blocked by (confirm present):** `notifyRewardAmount` is access-gated to a trusted distributor; it asserts `rewardRate > 0` and `rewardRate * rewardsDuration <= rewardToken.balanceOf(this)` (Synthetix's solvency require) after folding leftover; reward token is transferred in before/with the notify; `updateReward` modifier checkpoints on every stake/withdraw/getReward
+- **Where it applies:** Synthetix StakingRewards and every fork (Aave/Curve/Frax-style rewards), gauge reward streamers
+- **Severity:** MEDIUM (griefing/insolvency of the reward stream)
+
+### Perp collateral inflation via manipulated index/mark oracle (Mango-class)  ·  _oracle-manipulation_
+**Chain:**
+1. A perps/margin protocol values a trader's collateral (and/or unrealized PnL usable as margin) using an index price sourced from a thin spot market or a low-liquidity oracle
+2. Attacker (optionally flash-funded) pumps that spot/oracle price
+3. Their existing position / collateral is now marked far above true value, granting large borrow/withdraw capacity
+4. Attacker borrows out or withdraws the protocol's other assets against the inflated valuation
+5. Price reverts; the protocol is left with unbacked debt / drained treasury (Mango Markets, $114M)
+
+- **Blocked by (confirm present):** Collateral and liquidation valuation use a manipulation-resistant oracle (robust median / Chainlink / sufficiently long TWAP) independent of any venue the trader can move; deviation + staleness bounds cross-checked against a second source; borrow/withdraw capacity cannot be created by a single-block price move; position-size vs oracle-liquidity caps
+- **Where it applies:** Perps, cross-margin/derivatives exchanges, options and lending-against-perp-collateral systems
+- **Severity:** CRITICAL
+
+### Perp liquidation via stale mark + profitable self-liquidation / insurance drain  ·  _oracle-manipulation_
+**Chain:**
+1. Liquidation health uses a mark price that lags or can be nudged (internal AMM spot, un-throttled keeper push), separate from the trader's own actions
+2. Attacker moves the mark (or waits for a stale round) so a position — often their OWN — reads as under-maintenance-margin
+3. Attacker liquidates it, capturing the keeper/liquidation reward, and/or dumps the position's loss onto the insurance fund / counterparties via ADL
+4. The keeper reward plus the discounted seizure exceeds the cost, or the bad debt is socialized while the attacker keeps the incentive
+
+- **Blocked by (confirm present):** Liquidation requires genuine under-margin at a FRESH manipulation-resistant price (same oracle class as borrows); keeper reward is bounded and cannot itself push a position into bad debt or exceed the owner's retained collateral; self-liquidation is disallowed or never more profitable than a normal close; funding/mark accrued before the health check; bad debt beyond the insurance fund routes to a deterministic ADL/socialization path
+- **Where it applies:** Perps liquidation engines, cross-margin derivatives, options settlement with keeper-driven liquidation
+- **Severity:** HIGH
+
+### ERC-4337 paymaster deposit drain via validate→postOp state divergence  ·  _account-abstraction_
+**Chain:**
+1. A sponsoring/token paymaster prices its willingness to pay (or the ERC-20 it will charge the user) inside `validatePaymasterUserOp`, reading a mutable value (token price, user balance, an oracle)
+2. The op is included; between validation and `postOp` the priced state moves (attacker manipulates the token price, or spends the balance)
+3. `postOp` charges from the stale committed `context` — or reverts / undercharges — so the paymaster pays more gas than it recovers
+4. Repeated across many ops, the paymaster's EntryPoint deposit is drained, denying all sponsored users
+
+- **Blocked by (confirm present):** Sponsorship is bounded (sender allowlist, per-op and cumulative spend caps, `maxCost` respected); any price used to charge is from a manipulation-resistant source, not spot; `postOp` cannot revert and settles from a `context` that already fixed the charge; unstaked-entity griefing is bounded by stake + reputation
+- **Where it applies:** ERC-4337 verifying/token paymasters (EVM-mainly — verify a live EntryPoint on any TVM target first)
+- **Severity:** MEDIUM
+
+### EIP-7702 malicious/unprotected delegate → EOA sweep (incl. chainId=0 cross-chain replay)  ·  _account-abstraction_
+**Chain:**
+1. A user is induced to sign a 7702 set-code authorization — either to an attacker-controlled delegate, or the delegate exposes an `execute`/forwarder with no self-authorization
+2. The delegate's code now runs in the EOA's storage/balance context and is callable by ANYONE at the EOA address
+3. Attacker calls the delegated EOA and moves its funds (sweeper); if the authorization used `chainId == 0`, the same signature is replayed to install the delegate on every chain where the account nonce matches
+4. The account is drained on one or all chains; an unauthenticated `initialize()` can also be front-run to seize the account
+
+- **Blocked by (confirm present):** The delegate re-implements full access control (every value-moving path gated by its own signature/owner check or self-call, never "it's my EOA"); authorizations are scoped to a specific non-zero `chainId`; setup is atomic with / bound to the authorization; delegates use ERC-7201 storage so re-delegation can't collide; wallet UX surfaces the delegate target
+- **Where it applies:** EIP-7702 smart-EOA delegates (**EVM-only — no SetCode tx on TVM; verify TVM support before assuming, currently none**)
+- **Severity:** HIGH
+
+### Intent/Permit2 witness-less signature reuse → funds pulled outside signed limits  ·  _signature-replay_
+**Chain:**
+1. A flow uses Permit2 `permitTransferFrom` (no witness) so the user's signature covers only `(token, amount, nonce, deadline, spender)` — NOT the order's `minBuy`/receiver
+2. A solver/filler observes the signature and pairs it with a different, worse order (or reuses it against an arbitrary-call settlement interaction reachable to `transferFrom`)
+3. The tokens are pulled and swapped/settled without honoring the user's signed minimum, or at the solver's price
+4. The user receives less than agreed (or nothing); surplus/spread is taken by the filler
+
+- **Blocked by (confirm present):** Order flows use `permitWitnessTransferFrom` binding the full order struct as the witness (correct typehash) so the signature is inseparable from the specific order; settlement checks post-trade balances so each order's `minBuy`/`receiver` holds against any solver; arbitrary-call interactions cannot reach approvals/`transferFrom` for funds outside the batch; unordered nonce consumed, `deadline` enforced, EIP-712 domain binds chainId + verifyingContract
+- **Where it applies:** Permit2-based intents, CoW-style settlement, UniswapX/Fusion reactors (EVM-mainly — verify Permit2/settlement deployed on any TVM target; the canonical Permit2 address does not reproduce under TVM CREATE2)
+- **Severity:** HIGH
+
+### Cross-chain message forgery via missing peer/endpoint auth (and premature-finality reorg)  ·  _bridge-mint_
+**Chain:**
+1. An app's receive entrypoint (`lzReceive`/`_lzReceive`, `ccipReceive`, VAA consumer, Axelar `_execute`) fails to assert BOTH the trusted transport caller (endpoint/router/gateway) AND the trusted source `(chain, remote address)`
+2. Attacker delivers a forged message (spoofed emitter/peer) — or replays a real one lacking a consumed-nonce guard, or the destination acted before the source event was final and the source then reorgs
+3. The handler executes a privileged action (mint/unlock/config change) with no real backing
+4. Unbacked tokens released / protocol state hijacked (Nomad/Wormhole-class, generalized to messaging apps)
+
+- **Blocked by (confirm present):** Receive entrypoint checks `msg.sender ==` endpoint/router/gateway AND the source chain + remote/emitter are allowlisted (`trustedRemote`/`peers`/`sourceChainSelector`+sender/`emitterAddress`); the message's unique id (LZ nonce / CCIP messageId / `vm.hash` / commandId) is recorded in a processed mapping set before effects; adequate source confirmations / a non-zero challenge window before crediting; no trust in caller-supplied roots or default/zero roots
+- **Where it applies:** LayerZero OApps (**live LZ endpoint on TRON — in scope on TVM**), CCIP/Wormhole/Axelar integrations (verify per-protocol TVM deployment), and optimistic/light-client bridges
+- **Severity:** CRITICAL
+
 
 Grounding: ERC-4626 mitigations (virtual shares / decimal offset, internal accounting, dead-shares) confirmed against OpenZeppelin's ERC4626 docs and Euler's exchange-rate-manipulation write-up during this session. The remaining chains map to SWC entries (SWC-107 reentrancy, SWC-114 tx-ordering/approve-race, SWC-115 tx.origin, SWC-116 timestamp, SWC-117/121 signature replay, SWC-109 uninitialized-storage-pointer (note: SWC-118 is *Incorrect Constructor Name*, not uninitialized storage), SWC-120 weak randomness/oracle, SWC-128 gas DoS) and documented postmortems (bZx/Harvest/Cheese flash-oracle, Curve/Balancer read-only reentrancy, Rari/Fei first-depositor, Beanstalk flash-loan governance, Ronin/Harmony/Wormhole/Nomad bridges, Parity uninitialized proxy, Black Thursday zero-bid auctions). A few incident citations draw on established references rather than freshly fetched pages; re-verify specific postmortem details against primary sources before publishing the audit report. Severity reflects typical realized impact; TVM note: TRON now aligns SELFDESTRUCT with EIP-6780 (mainnet since 2026-04-10) but still differs on EIP-1967 tooling, precompiles, and the energy model, so verify proxy-slot and force-feed assumptions against TVM behavior for TRON deployments.
 

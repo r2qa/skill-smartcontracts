@@ -1,6 +1,6 @@
 # Vulnerable Functions Checklist
 
-> Walk every applicable item during a review. Grouped by contract type. For each: the grep-able pattern, why it's risky, and the concrete check to perform. 110 functions across 14 categories. Companion: [vulnerable-chains.md](vulnerable-chains.md).
+> Walk every applicable item during a review. Grouped by contract type. For each: the grep-able pattern, why it's risky, and the concrete check to perform. 173 function patterns across 21 contract-type categories. Companion: [vulnerable-chains.md](vulnerable-chains.md).
 
 
 ## token
@@ -456,6 +456,272 @@
 ### `TRON/TVM-specific: energy & bandwidth, address format, precompiles, CREATE2, tx fee model`
 - **Risk:** TVM diverges from EVM: gas→energy/bandwidth, different precompile set, address encoding (base58 T-address vs 0x41 hex), some EVM opcodes/precompiles absent or behave differently, and `block.coinbase`/`block.number` semantics differ — code ported from Ethereum may silently misbehave.
 - **Verify:** Verify assembly/precompile usage (ecrecover, modexp, bn256) is TVM-supported; verify address handling for the 0x41 prefix; verify energy-limit assumptions in loops/callbacks; verify CREATE2 address derivation matches TVM; re-validate any hardcoded gas values and time-based math against TRON's ~3s blocks. **Details in the `tvm-native` section below.**
+
+
+## erc4626-vault
+
+### `deposit(uint256 assets,address receiver) / mint(uint256 shares,address receiver)`
+- **Risk:** First-depositor inflation (attacker mints 1 wei share, donates assets, later deposits round to 0 shares — Sonne Finance $20M, Hundred, Onyx-class), share rounding in the depositor's favor, and no slippage bound (the EIP-4626 signature has NO minSharesOut, so a router-less deposit is silently sandwichable). Fee-on-transfer/TRC-20 assets credit the argument not the received amount.
+- **Verify:** Verify inflation mitigation (OZ `_decimalsOffset()` virtual shares/assets, dead-share seed, or protocol-seeded initial deposit); verify `shares = assets.mulDiv(totalSupply+10**offset, totalAssets+1, Rounding.Down)` rounds shares DOWN on deposit and assets UP on mint; verify received = balanceAfter-balanceBefore for fee-on-transfer assets; verify callers wrap with a `minShares`/`maxAssets` slippage check; confirm nonReentrant and CEI (asset pulled before share mint).
+
+### `withdraw(uint256 assets,address receiver,address owner) / redeem(uint256 shares,address receiver,address owner)`
+- **Risk:** Rounding in the redeemer's favor drains other holders over repeated round-trips; missing allowance check on `owner != msg.sender` burns someone else's shares; reentrancy on the asset transfer-out; no minAssetsOut slippage bound in the standard signature.
+- **Verify:** Verify withdraw rounds shares UP and redeem rounds assets DOWN (both against the user); verify `_spendAllowance(owner, msg.sender, shares)` when caller != owner; verify shares burned BEFORE the asset `safeTransfer` (CEI) and nonReentrant; verify no profitable deposit→withdraw or mint→redeem round-trip at 1-wei and empty-pool edges; verify callers enforce a `minAssets`.
+
+### `totalAssets()`
+- **Risk:** The pricing denominator. If it returns `asset.balanceOf(address(this))` (plus naive strategy value) it is donation-manipulable and enables the inflation attack; if it prices strategy positions from an AMM spot/`get_virtual_price`/LP reserves it is flash-loan manipulable; unrealized/pending harvest not counted desyncs share price.
+- **Verify:** Verify `totalAssets` derives from internal accounting (a stored `_totalAssets`/strategy-reported figure mutated only via deposit/withdraw/harvest), not raw `balanceOf`; verify any strategy valuation uses a manipulation-resistant oracle not spot reserves; verify idle + deployed + accrued are summed once with no double-count; confirm a direct token donation cannot move it.
+
+### `previewDeposit / previewMint / previewWithdraw / previewRedeem vs the actual mutating call`
+- **Risk:** EIP-4626 requires `previewDeposit <= deposit` shares and `previewRedeem <= redeem` assets (preview must not over-promise), and previews MUST include fees and MUST NOT revert on vault-specific caps. A preview that ignores the deposit/withdraw fee, or rounds the opposite direction from the real call, lets integrators/aggregators mis-quote and be arbitraged or sandwiched.
+- **Verify:** Verify each preview uses the SAME rounding direction and fee math as its mutating counterpart; verify `previewDeposit`/`previewRedeem` never return MORE than the real call yields; verify previews do not apply `maxDeposit`/user caps (those belong to `maxX`); confirm preview is `view` and free of state-dependent divergence from the executed path.
+
+### `convertToShares(uint256) / convertToAssets(uint256)`
+- **Risk:** Spec-defined ideal conversions that MUST round DOWN and MUST NOT reflect per-user limits or fees; if an integrator prices collateral off `convertToAssets` it can be inflated by the same donation that skews `totalAssets`; inconsistent forward/inverse rounding creates a round-trip profit.
+- **Verify:** Verify both round DOWN; verify they exclude fees and caps (else previews/maxes are wrong); verify zero-supply branch returns the offset-adjusted initial rate not a divide-by-zero; flag any external consumer treating `convertToAssets(1e18)` as a manipulation-resistant price.
+
+### `maxDeposit / maxMint / maxWithdraw / maxRedeem`
+- **Risk:** Caps that gate strategy capacity, pause state, and per-user limits. A `maxDeposit` returning `type(uint256).max` while the strategy has a real deposit cap causes deposits to revert after quoting (integrator DoS); a `maxWithdraw` that ignores illiquid/deployed capital lets a redeem revert or force a fire-sale.
+- **Verify:** Verify `maxWithdraw`/`maxRedeem` reflect actually-liquid assets (idle + instantly-withdrawable strategy), not total; verify caps return 0 when paused; verify `maxDeposit` matches the strategy/supply cap so `previewDeposit` at the cap does not later revert; confirm caps are honored inside `deposit`/`mint` (not advisory only).
+
+### `_decimalsOffset() / virtual shares / dead-share seed [first-depositor mitigation]`
+- **Risk:** The inflation-attack mitigation itself. A `_decimalsOffset()` of 0 (OZ default) leaves only a ~1-share buffer — insufficient for high-value assets; a hand-rolled "mint to dead address" seed that is too small, or seeded AFTER the first external deposit is allowed, still permits the donation attack.
+- **Verify:** Verify the offset is large enough that a donation can't profitably round a real deposit to 0 (attacker's donation cost must exceed victim's rounding loss); verify virtual shares/assets are added in BOTH directions of every conversion; if using a dead-share seed, verify it is minted atomically at initialization before any user can deposit and is non-withdrawable.
+
+### `strategy harvest / report / _deposit-into-strategy / _withdraw-from-strategy (yield aggregator)`
+- **Risk:** Harvest swaps rewards→asset with `minOut=0` (loss socialized — sandwichable keeper tx); a report that marks unrealized strategy P&L from a manipulable price lets an attacker deposit before a favorable mark and redeem after; loss on `_withdraw` not reflected before pricing lets the last-out redeemer avoid a loss others absorb; harvest callable by anyone to time accruals.
+- **Verify:** Verify internal harvest swaps compute `minOut` from an independent oracle/TWAP; verify strategy reports are bounded (max gain/loss per report, like Yearn's `managementFee`/loss limits) and use realized or oracle-priced value; verify a loss is applied to `totalAssets` atomically before any same-block withdrawal can exit; verify harvest access/rounding and reentrancy across the vault↔strategy boundary (cross-contract guard).
+
+### `TVM: SUN 6-decimal native TRX in share math / TRC-20 asset decimals`
+- **Risk:** A vault whose underlying is native TRX receives value in SUN (1e6), not wei (1e18) — 18-dec share math over a 6-dec asset changes the inflation-attack economics and can mis-scale conversions by 1e12; TRON USDT/USDD are 6 decimals, so a hardcoded 18-dec `totalAssets`/offset misprices shares.
+- **Verify:** Confirm the offset and conversion scaling match the ACTUAL asset decimals (6 for TRX-SUN, USDT, USDD); keep native-TRX (SUN) vault math distinct from TRC-20 token math; verify the virtual-share buffer is sized in the asset's real decimals, not an assumed 18.
+
+
+## staking-rewards
+
+### `accRewardPerShare / rewardDebt accounting [MasterChef]`
+- **Risk:** The core reward invariant `pending = user.amount * accRewardPerShare / PRECISION - user.rewardDebt`. If `updatePool` is not called before every `user.amount` change, or `rewardDebt` isn't reset to `user.amount * accRewardPerShare / PRECISION` after deposit/withdraw, users over/under-claim. `PRECISION` too small (classic `1e12`) truncates `accRewardPerShare` for high-decimal or low-emission pools, silently zeroing rewards or leaving drainable dust.
+- **Verify:** Verify `updatePool(pid)` runs at the start of deposit/withdraw/harvest BEFORE touching `user.amount`; verify `rewardDebt` recomputed on every balance change; verify `accRewardPerShare` scaled by `1e12`/`1e18` and that `reward * PRECISION / lpSupply` doesn't truncate to 0 for the pool's decimals; verify `lpSupply == 0` branch skips accrual (no divide-by-zero).
+
+### `updatePool(uint256 pid) / massUpdatePools()`
+- **Risk:** Accrual uses `(block.number - lastRewardBlock) * rewardPerBlock * allocPoint / totalAllocPoint`. Skipping it before `set()`/`add()` changing `allocPoint` retroactively re-prices past blocks; `massUpdatePools` looping over an unbounded pool array hits the gas/energy limit (add-pool DoS); adding a pool without `massUpdatePools` first steals allocation from existing pools.
+- **Verify:** Verify `add`/`set` call `massUpdatePools()` (or `updatePool` on affected pools) BEFORE changing allocPoints; verify pool count is bounded / `massUpdatePools` can't be bricked by array growth; verify `lastRewardBlock` advances even when `lpSupply==0` so blocks aren't double-counted.
+
+### `deposit(uint256 pid,uint256 amount) / withdraw(uint256 pid,uint256 amount) [MasterChef]`
+- **Risk:** Harvest-on-deposit pattern pays pending before updating `amount`; if `updatePool` is skipped or CEI is violated (LP pulled after reward paid via a hook token) it reenters; flash-deposit right before a harvest captures a same-block reward share.
+- **Verify:** Verify order: `updatePool` → pay pending (`amount*acc/PREC - rewardDebt`) → change `user.amount` → reset `rewardDebt` → transfer LP; verify reward accrues per-block so a same-block deposit-then-harvest earns ~0; verify nonReentrant and received-amount for fee-on-transfer LP.
+
+### `emergencyWithdraw(uint256 pid)`
+- **Risk:** Must return principal while forfeiting rewards; a bug that doesn't zero `user.rewardDebt`/`user.amount` lets the user later re-claim rewards on withdrawn principal or leaves `accRewardPerShare` desynced; must never revert (it's the escape hatch).
+- **Verify:** Verify it sets `user.amount = 0` and `user.rewardDebt = 0` BEFORE transferring LP; verify it does NOT pay rewards; verify it can't underflow pool bookkeeping and remains callable when the rest of the contract is paused.
+
+### `stake-token == reward-token single-pool accounting`
+- **Risk:** If the staking token and reward token are the same and rewards are paid from the same contract balance that holds stakes, `pendingReward` computed from `balanceOf(this)` (or an `lpSupply` read from balance) counts deposited principal as distributable reward — the pool pays out other users' stake (classic MasterChef fork drain).
+- **Verify:** Verify staked principal is tracked in internal accounting separate from the reward reserve; verify `lpSupply`/`pending` never reads `token.balanceOf(this)` when stake==reward; verify a deposit cannot increase any other user's claimable reward.
+
+### `Synthetix StakingRewards: notifyRewardAmount / rewardRate / periodFinish / rewardPerToken / earned`
+- **Risk:** `rewardRate = reward / rewardsDuration` rounds to 0 if `reward < duration` (rewards stranded); `notifyRewardAmount` recomputing `rewardRate = (reward + leftover) / duration` and resetting `periodFinish` lets an authorized-but-careless (or attacker-controlled) caller DILUTE the rate and stretch the period; the transferred reward balance must cover `rewardRate*duration` or the last claimers get nothing (insolvent distribution).
+- **Verify:** Verify `rewardRate > 0` after notify (reward >= duration in the reward token's decimals); verify the reward token is actually transferred in and `rewardRate*rewardsDuration <= balance` (Synthetix's explicit `require`); verify `notifyRewardAmount` is access-controlled to the distributor; verify `lastTimeRewardApplicable = min(block.timestamp, periodFinish)` and `rewardPerTokenStored` updated via the `updateReward` modifier on every stake/withdraw/getReward.
+
+### `getReward / harvest / claim / claimRewards`
+- **Risk:** Double-claim if `rewards[account]`/`userRewardPerTokenPaid` not zeroed before transfer; reentrancy via the reward token; rounding dust accumulation drained over many claims.
+- **Verify:** Verify `rewards[msg.sender]` set to 0 BEFORE the reward `safeTransfer` (CEI); verify `updateReward(msg.sender)` runs first; verify per-claim rounding favors the protocol; nonReentrant on the reward token path.
+
+### `gauge vote / vote_for_gauge_weights / user_checkpoint [Curve/veToken gauge]`
+- **Risk:** Vote weight derived from a `ve` balance that can be flash-acquired or double-counted across gauges; a missing `user_checkpoint` before weight change back-dates emissions; vote-power decay (linear over lock) mis-integrated lets a stale checkpoint over-count.
+- **Verify:** Verify voting power is read from a checkpointed veBalance at a bias/slope, not spot; verify per-user and per-gauge checkpoints run before any weight/emission change; verify a user can't vote the same ve weight across gauges beyond 100%; verify emission integration handles the linear decay boundary.
+
+### `bribe / claim_bribe / feeDistributor claim [ve(3,3) / Velodrome-style]`
+- **Risk:** Bribe/fee rewards claimed for an epoch the voter didn't actually vote in, or claimed twice across epochs; bribe accounting keyed on a manipulable current-vote snapshot rather than the epoch-finalized weight; rounding lets last-claimer over-draw.
+- **Verify:** Verify bribes accrue against the FINALIZED per-epoch vote weight (not live), keyed by (epoch, gauge, user) with a claimed flag; verify no claim before the epoch flips; verify total distributed <= deposited per epoch; verify vote power used matches the epoch it's claimed for.
+
+### `TVM: rewardPerBlock over ~3s TRON blocks (block.number emission)`
+- **Risk:** MasterChef emits `rewardPerBlock` per BLOCK. TRON's ~3s block time (vs Ethereum ~12s) means an EVM→TRON port keeping the same `rewardPerBlock` (or a `bonusEndBlock`/`startBlock` copied from Ethereum) emits ~4× faster in wall-clock — over-inflating rewards and exhausting the reward reserve early.
+- **Verify:** Verify block-number-denominated emission/schedule constants are re-derived for TRON's ~3s blocks (or switch to timestamp-based like Synthetix); confirm `startBlock`/`bonusEndBlock`/`rewardPerBlock` weren't copied from an Ethereum deployment; verify the reward reserve covers the real wall-clock emission.
+
+
+## perps-derivatives
+
+### `funding rate accrual: cumulativeFundingRate / _updateFunding / fundingIndex / _settleFunding`
+- **Risk:** Funding = premium `(markPrice - indexPrice)/indexPrice` integrated over time; if not accrued (via a global `cumulativeFundingRate` index applied to each position on interaction) BEFORE a position is opened/closed, a trader opens right before a large funding payment and closes right after to dodge it, or harvests funding they didn't hold through; per-block accrual on `block.number` misprices the time integral.
+- **Verify:** Verify a global funding index is updated on every position mutation and settlement, and each position settles funding against the delta since its last-touched index; verify funding accrues over elapsed TIME (timestamp), not block count; verify the mark-index spread feeding funding can't be single-block manipulated; verify funding cannot be gamed by open-just-before/close-just-after (accrual is continuous, not stepped at settlement points).
+
+### `mark price vs index/oracle price separation`
+- **Risk:** Using ONE price for both entry/PnL (mark) and collateral/liquidation (index) collapses the safeguard: if mark = an internal AMM/orderbook spot, it's manipulable to open/close at a favorable price; if collateral valuation uses the same spot, the whole book is flash-manipulable (Mango Markets $114M — attacker pumped the MNGO oracle and borrowed out the treasury against inflated perp collateral).
+- **Verify:** Verify mark price (for PnL) and index price (for margin/liquidation/settlement) are distinct and that the COLLATERAL/liquidation price is a manipulation-resistant oracle (median/Chainlink/long TWAP), never a thin spot; verify no path lets a trader's own action move the price that values their collateral; cross-check the index against a second source with deviation bounds.
+
+### `openPosition / increasePosition / decreasePosition / closePosition [PnL & margin]`
+- **Risk:** PnL and margin math sign errors (long vs short), notional computed from a manipulable mark, leverage cap not enforced post-open, and unrealized PnL counted as free collateral to open more (reflexive leverage). Rounding of margin/notional in the trader's favor accumulates.
+- **Verify:** Verify margin ratio checked AFTER the position change with a conservative price; verify max-leverage/initial-margin enforced on increase; verify unrealized profit isn't usable as margin beyond protocol rules; verify PnL sign per direction and that notional uses the index for margin checks; verify rounding favors the protocol; nonReentrant on collateral transfer.
+
+### `liquidatePosition / liquidate [liquidation engine] + keeper incentive / liquidationReward`
+- **Risk:** Liquidating a healthy position (stale/manipulated mark), seizing too much collateral (bad-debt spiral), self-liquidation to capture the keeper reward, or a liquidation reward large enough to itself push a marginal position into bad debt. Partial-liquidation rounding and reentrancy on payout.
+- **Verify:** Verify position is provably below maintenance margin at a FRESH manipulation-resistant price before liquidation; verify seize/close-factor bounds and that the keeper reward is capped and cannot create bad debt; verify a trader can't profitably self-liquidate; verify remaining position stays solvent or routes to the bad-debt path; nonReentrant and CEI on collateral/reward transfer.
+
+### `ADL (auto-deleveraging) / socializeLoss / insuranceFund draw`
+- **Risk:** When a liquidation leaves bad debt exceeding the insurance fund, missing ADL/socialization leaves unbacked positions (protocol insolvency); mis-ranked ADL (deleveraging the wrong counterparties) or an insurance-fund draw callable/gameable lets an attacker force losses onto specific traders.
+- **Verify:** Verify a defined path handles bad debt beyond the insurance fund (ADL by PnL/leverage ranking or pro-rata socialization); verify the insurance fund can only be drawn by the liquidation engine and can't go negative unhandled; verify ADL selection is deterministic and not attacker-steerable; verify conservation (sum of margins + insurance = deposits) holds after settlement.
+
+### `index/settlement oracle: getPrice / getIndexPrice / updatePrice keeper`
+- **Risk:** The single most catastrophic dependency (Mango, Deus, many perps). A pushed/keeper price with no deviation/staleness bound, or an index averaging thin venues, lets an attacker set the settlement price; traders front-run a mempool-visible oracle update (GMX-avax-class) to open/close around a known price move.
+- **Verify:** Verify oracle staleness (`updatedAt` within heartbeat), `answer>0`, and deviation/rate-of-change bounds; verify pushed prices require quorum/signature; verify index is a robust median resistant to single-venue manipulation; assess whether a pending oracle update is front-runnable and whether opens/closes should be delayed/committed relative to price updates.
+
+### `order matching / fillOrder / settle / matchOrders [orderbook / RFQ perp]`
+- **Risk:** Off-chain-signed orders replayed (missing nonce/expiry/domain), a maker order filled at a stale price, self-trade/wash to move mark or harvest maker rebates, and matching that doesn't enforce price-time priority letting an operator fill against users adversely.
+- **Verify:** Verify each order has a per-maker nonce + deadline + EIP-712 domain (chainId + verifyingContract) and a consumed-digest guard; verify fill price respects the order limit and a fresh index; verify self-trade prevention; verify the settling party can't pick which side to fill for profit (price-time priority / no operator discretion on price).
+
+### `self-liquidation / liquidate own position`
+- **Risk:** A trader liquidates their own position to (a) capture the keeper reward from their own collateral at a better rate than closing, or (b) after manipulating price, dump a losing position's loss onto the insurance fund/counterparties while extracting the incentive.
+- **Verify:** Verify liquidator != position owner (or the incentive is structured so self-liquidation is never more profitable than a normal close); verify liquidation requires genuine under-margin at a manipulation-resistant price so a self-liquidation can't be price-triggered; verify the keeper reward can't exceed the trader's own retained collateral.
+
+### `TVM: funding/emission accrual over ~3s blocks; SUN 6-decimal collateral`
+- **Risk:** Per-block funding or interest accrual ported from Ethereum over-accrues ~4× on TRON's ~3s blocks; native-TRX collateral is SUN (1e6) — 18-dec margin math over 6-dec collateral misprices notional and liquidation thresholds.
+- **Verify:** Verify funding/interest integrate over timestamp not block count (or re-derive per-block rates for ~3s blocks); verify collateral decimals (SUN 1e6 for TRX, 6 for TRON USDT/USDD) match the margin math; keep native-TRX and TRC-20 collateral scaling distinct.
+
+
+## account-abstraction-4337
+
+> ERC-4337 account abstraction (EntryPoint + smart accounts + paymasters + aggregators). **EVM-mainly.** The canonical EntryPoint singleton (v0.6 `0x5FF137...5789`, v0.7 `0x0000000071727De22E5E9d8BAf0edAc6f37da032`) is deployed deterministically via Nick's method on EVM chains; TVM CREATE2 uses a `0x41` prefix so the canonical address does NOT reproduce on TRON, and there is no assumption a live EntryPoint exists on TVM. **Verify an EntryPoint is actually deployed on the TVM target and that the account binds TRON's chainId (`0x2b6653dc`) before assuming any of this applies.**
+
+### `validateUserOp(PackedUserOperation,bytes32 userOpHash,uint256 missingAccountFunds) [smart account]`
+- **Risk:** The account's sole security gate. Two dominant bugs: (1) not restricting the caller — `validateUserOp`/`execute` must be callable ONLY by the trusted EntryPoint, else anyone drives account actions directly; (2) validating a signature over an attacker-recomputable hash instead of the EntryPoint-supplied `userOpHash` (which binds `entryPoint` + `chainId`), enabling cross-account / cross-chain / cross-entrypoint replay.
+- **Verify:** Confirm `require(msg.sender == entryPoint)` (or `_requireFromEntryPoint`) on `validateUserOp` and on `execute`/`executeBatch`; confirm the signature is checked against the passed `userOpHash` (not a locally re-derived hash that omits entryPoint/chainId); confirm `missingAccountFunds` is repaid to the EntryPoint; confirm validation has no external calls that could reenter.
+
+### `validationData packing: authorizer | validUntil(48) | validAfter(48)`
+- **Risk:** The 256-bit return encodes auth result + time bounds. Returning raw `0`/`1` where the code intends time-bounded validity, packing `validUntil`/`validAfter` in the wrong bit positions, or returning `address(0)` (success) on a failed signature branch silently authorizes every op. `SIG_VALIDATION_FAILED` is `address(1)` in the low 160 bits — a `return 0` on the failure path is an auth bypass.
+- **Verify:** Confirm the failure path returns `SIG_VALIDATION_FAILED` (1), not 0; confirm `validUntil`/`validAfter` occupy the correct bits (`validUntil<<160`, `validAfter<<208`) and are enforced by the EntryPoint; confirm a non-zero low-160 that isn't `1` is a deliberate aggregator address, not an accident.
+
+### `nonce: EntryPoint NonceManager (192-bit key + 64-bit sequence) vs account-local nonce`
+- **Risk:** 4337 replay protection lives in the EntryPoint's 2D nonce (`getNonce(sender,key)`), not the account. An account that ALSO rolls its own nonce (or trusts a nonce field inside its signed payload) can desync, double-execute, or brick; an account that reads/writes nonce state outside its own associated storage violates validation rules.
+- **Verify:** Confirm the account relies on EntryPoint nonce sequencing for replay protection (or, if it keys ops itself, that the value is consumed atomically in validation and bound into the signed hash); confirm no second, unsynchronized nonce path; confirm 2D-nonce keys can't be chosen to skip replay checks.
+
+### `validatePaymasterUserOp(PackedUserOperation,bytes32,uint256 maxCost) / postOp(mode,context,actualGasCost,...) [paymaster]`
+- **Risk:** The paymaster stakes/deposits real value to sponsor gas. Sponsoring without constraints, or pricing an ERC-20 charge in `validatePaymasterUserOp` and settling it in `postOp` off state that moved between the two phases, lets an attacker drain the deposit or pay less than the gas consumed. `postOp` reverting (or not being idempotent across `opReverted`) can grief or double-charge.
+- **Verify:** Confirm the paymaster restricts WHICH ops it sponsors (sender allowlist, spending caps, per-op gas cap) and that `maxCost` bounds exposure; confirm the ERC-20/price used to charge in `postOp` cannot be manipulated between validation and `postOp` (no spot-AMM price, use a guarded oracle); confirm `postOp` handles both `opSucceeded` and `opReverted` without reverting and charges from the `context` it committed to; confirm `msg.sender == entryPoint` on `postOp`.
+
+### `IAggregator: validateUserOpSignature / aggregateSignatures / validateSignatures`
+- **Risk:** A signature aggregator (e.g. BLS) validates a batch's signatures on behalf of opted-in accounts; the account trusts whatever aggregator it names in `validationData`. A malicious/broken aggregator validates arbitrary ops for its accounts; BLS aggregation without proof-of-possession is open to rogue-key attacks; `validateSignatures` that doesn't bind each `userOpHash` lets one valid aggregate cover forged members.
+- **Verify:** Confirm each account only points to a trusted, audited aggregator; confirm `validateSignatures` binds every member `userOpHash` and reverts on any invalid member (no partial acceptance); for BLS confirm proof-of-possession / rogue-key defense and correct domain separation; confirm the aggregator is itself staked per the bundler's reputation rules.
+
+### `validation-scope rules (ERC-7562): banned opcodes + restricted storage during validation`
+- **Risk:** During `validateUserOp`/`validatePaymasterUserOp` the entity may only touch its own + "associated" storage and must avoid environment opcodes (`TIMESTAMP`, `NUMBER`, `COINBASE`, `BLOCKHASH`, `BASEFEE`, `GASPRICE`, `BALANCE`/`SELFBALANCE` of others, `ORIGIN`, `CREATE`, `SELFDESTRUCT`, unbounded `GAS`). Validation that reads externally-mutable state passes the bundler's simulation but can be invalidated en masse on-chain — a mempool DoS/griefing vector (unstaked entities get throttled/banned).
+- **Verify:** Confirm validation reads only the account's own or associated storage (slots keyed by the account address) and no forbidden opcodes; confirm entities that legitimately need broader access are staked; flag any validation-time branch on `block.timestamp`/`block.number`/balances/oracle reads that could pass simulation yet revert on inclusion.
+
+### `EntryPoint deposit & stake: depositTo / addStake(unstakeDelaySec) / unlockStake / withdrawStake / withdrawTo`
+- **Risk:** Stake underwrites an entity's right to use associated storage; deposit pays for gas. Griefing surfaces: withdrawing/unlocking stake to escape reputation, a paymaster whose deposit is drained by spam ops (denying real users), or a factory/paymaster with no stake mass-invalidating the mempool. `withdrawTo`/`withdrawStake` without correct auth lets funds leave early.
+- **Verify:** Confirm `addStake` uses an adequate `unstakeDelaySec` and that `withdrawStake` respects the unlock delay; confirm deposit top-ups and spend caps prevent a single attacker from draining a shared paymaster deposit; confirm `withdrawTo`/`withdrawStake` are owner/governance-gated; assess reputation/throttling assumptions for unstaked entities.
+
+### `handleOps / handleAggregatedOps / innerHandleOp / executeUserOp — batch execution boundary`
+- **Risk:** The EntryPoint runs validation for the whole batch then execution; a bug in an account/paymaster that lets validation succeed but execution consume unexpected gas socializes cost to the bundler. Custom `executeUserOp` hooks or `execute(dest,value,func)` on the account that don't re-assert the EntryPoint caller are a direct call surface.
+- **Verify:** Confirm the account's execute path is EntryPoint-only and cannot be reached with attacker calldata directly; confirm no reentrancy from execution back into validation state; confirm gas limits (`verificationGasLimit`, `callGasLimit`, `paymasterPostOpGasLimit`) are honored so a griefing op can't overrun.
+
+## eip-7702
+
+> EIP-7702 lets an **EOA delegate to contract code** via a signed set-code authorization (Pectra, Ethereum mainnet May 2025); the delegate's code then executes in the EOA's own storage/balance context. **EVM-only: TVM has no SetCode (type-4) transaction type — 7702 does not exist on TRON today. Verify TVM support before assuming any of this applies; currently none.** This section also fixes the `code.length==0 ⇒ EOA` assumption that 7702 breaks (see also the 1271 entry in the `signature` section).
+
+### `EIP-7702 authorization tuple (chainId, address, nonce) signed by the EOA`
+- **Risk:** Signing an authorization is equivalent to installing arbitrary code as your account. A phishing signature to a malicious/attacker "delegate" grants full control of the EOA (sweeper bots drain the instant funds arrive). The authorization is a plain secp256k1 signature over `keccak256(0x05 || rlp(chainId, address, nonce))` — no on-chain confirmation dialog beyond the wallet.
+- **Verify:** Treat any code path that induces a 7702 authorization as maximum-privilege; confirm the wallet/UX shows the delegate target and that the delegate address is a known, audited implementation (not arbitrary); confirm the delegate itself cannot be swapped by an unrelated signature flow.
+
+### `delegate code runs in the EOA's context — unprotected entrypoint / missing self-auth`
+- **Risk:** ANY caller can invoke the delegated EOA address and run the delegate's code with the EOA's funds and storage. A delegate exposing `execute(target,value,data)` / batch-call without its own authorization (owner check, per-op signature, or `require(msg.sender == address(this))`) lets anyone drain the account — the delegate must re-implement all access control because the "EOA" no longer implies "only the key acts."
+- **Verify:** Confirm every value-moving/state-changing function on the delegate enforces its own auth (ECDSA-over-op, 4337-style validation, or self-call), not merely "it's my EOA"; confirm there is no unguarded `call`/`delegatecall` forwarder; confirm `receive`/`fallback` can't be abused by arbitrary callers.
+
+### `chainId == 0 authorization (cross-chain replay of set-code)`
+- **Risk:** EIP-7702 permits `chainId == 0` to mean "valid on ANY chain." A `chainId==0` authorization can be replayed on every chain where the signer's account nonce matches, installing the delegate account-wide. Even a well-meaning delegate becomes a cross-chain liability if its storage/logic differs per chain, and a malicious replay installs attacker code everywhere.
+- **Verify:** Confirm authorizations are scoped to the specific `chainId` (non-zero) unless universal delegation is genuinely intended and safe; flag any signing flow that emits `chainId==0`; confirm the delegate behaves identically and safely across all chains it could land on.
+
+### `initialize() / setup on a freshly-delegated EOA not bound to the authorization`
+- **Risk:** Delegation installs code but does NOT call any initializer. If the account is set up (owner set, keys configured) in a separate, unauthenticated tx, an attacker front-runs `initialize()` between delegation and setup and seizes the account — the 7702 analog of the uninitialized-proxy takeover.
+- **Verify:** Confirm initialization is atomic with delegation or authenticated to the same authority (e.g. init params bound into the authorization or gated by the signer); confirm `initialize` cannot be re-run or front-run; confirm the delegate has a sane default owner if uninitialized.
+
+### `storage collision across re-delegation (set-code does not clear storage)`
+- **Risk:** Re-delegating an EOA to a new implementation does NOT wipe its storage; slots written by the previous delegate persist and are reinterpreted by the new one — a proxy-style storage-layout collision on an account that can be re-pointed at any time. Two implementations with different layouts corrupt owner/nonce/allowance slots.
+- **Verify:** Confirm delegates use namespaced storage (ERC-7201) rather than sequential slots so re-delegation can't collide; confirm any migration between delegate versions accounts for pre-existing storage; treat an EOA that has ever been delegated as having "dirty" storage.
+
+### `code.length==0 / extcodesize / msg.sender==tx.origin used to prove "EOA"`
+- **Risk:** A delegated EOA carries a 23-byte `0xef0100||delegate` designator, so `code.length == 0` no longer proves EOA and `code.length > 0` no longer proves "cannot ECDSA-sign." Worse, a 7702 account can be `msg.sender == tx.origin` AND run contract code — the classic `require(msg.sender == tx.origin)` anti-contract/anti-flashloan gate is defeated, and `extcodesize`-based allowlists both false-negative (reject delegated EOAs) and false-positive.
+- **Verify:** Flag any auth/anti-bot/relayer gate using `extcodesize`/`code.length`/`tx.origin==msg.sender` to distinguish EOAs from contracts — post-7702 none of these are sound; route contract-wallet and delegated-EOA signatures through ERC-1271 + ECDSA (OZ `SignatureChecker`) instead of code-size heuristics.
+
+## intents-solvers
+
+> Signed intents / orders settled by third-party solvers/fillers (CoW-style, UniswapX/Fusion Dutch auctions, Permit2-based flows). The user signs limits off-chain; a solver supplies liquidity and calldata on-chain. **Permit2, UniswapX reactors, and CoW settlement are EVM-mainly** — Permit2's canonical CREATE2 address (`0x000000000022D473030F116dDEE9F6B43aC78BA3`) does NOT reproduce under TVM's `0x41` CREATE2 derivation. **Verify Permit2 / the settlement contract are actually deployed on the TVM target before assuming this flow exists on TRON.**
+
+### `Permit2 SignatureTransfer: permitTransferFrom / permitWitnessTransferFrom (witness binding)`
+- **Risk:** A plain `permitTransferFrom` signature authorizes moving `(token, amount, nonce, deadline)` to the `spender` — it does NOT bind the order/intent it's meant to fund. A solver/filler can reuse that signature to pull the tokens under a DIFFERENT (worse) order unless the intent is bound as a `witness` via `permitWitnessTransferFrom`. Missing witness = the user's minOut/recipient limits are not covered by the signature.
+- **Verify:** Confirm order flows use `permitWitnessTransferFrom` with the full order struct as the witness (correct witness typehash + typestring), so the Permit2 signature is inseparable from the specific order; confirm the unordered-nonce bitmap slot is consumed and can't be reused; confirm `deadline` and `spender` are enforced.
+
+### `Permit2 AllowanceTransfer: approve/permit(expiration,nonce) + infinite allowance to router/settlement`
+- **Risk:** Users grant a single large/infinite Permit2 allowance to a settlement/router; if that contract exposes an arbitrary-call interaction (solver-supplied targets/calldata), it can be pointed back at `Permit2.transferFrom` to pull any approved user's balance. AllowanceTransfer packs `(amount, expiration, nonce)` — a missing/oversized expiration or a nonce not advanced enables replay.
+- **Verify:** Confirm the settlement/router cannot be induced to call `transferFrom`/Permit2 on behalf of a user beyond that user's signed order (interactions can't reach the approval/token contracts for other users' funds); confirm allowance `expiration` is bounded and `nonce` advances; flag infinite Permit2 approvals to any contract with arbitrary-call solver hooks.
+
+### `order/intent EIP-712 signing (sellToken/buyToken/minBuy/validTo/nonce/kind/receiver) + settlement`
+- **Risk:** Off-chain orders are replayable/forgeable if the EIP-712 domain omits `chainId`/`verifyingContract`, if there's no `validTo`/deadline, or if fill accounting lets an order over-fill. `abi.encodePacked` of order fields into the hash can collide (hash-collision forgery). A settlement that verifies the signature but not that the executed prices respect the signed limits pays the user less than they agreed. The core invariant is that the user receives at least their signed `minBuy` at their `receiver`; a solver keeping surplus beyond protocol rules, or filling at the solver's price rather than the user's limit, is value theft.
+- **Verify:** Confirm the EIP-712 domain binds `chainId` (recomputed on fork) + `verifyingContract`, and the struct hash uses `abi.encode` (not packed) for multi-field/dynamic orders; confirm `validTo`/deadline and per-order nonce/filled-amount tracking prevent replay and over-fill; confirm the settlement checks post-trade balances so every order's `minBuy`/`receiver` limit holds regardless of solver behavior.
+
+### `settlement solver interactions / arbitrary-call callback (filler-provided calldata)`
+- **Risk:** Solver-driven settlements (CoW `settle` interactions, UniswapX reactor `reactorCallback`) execute filler-supplied calls. Without strict boundaries the callback can transfer out user or other-order funds, reenter settlement, or leave the settlement contract holding an allowance an attacker exploits. The solver is a trust boundary: the contract must enforce user limits even against a malicious solver.
+- **Verify:** Confirm the arbitrary-call surface cannot touch token approvals/`transferFrom` for funds outside the batch being settled; confirm reentrancy protection around the callback and that clearing-price/limit checks run AFTER interactions on measured balances; confirm the solver set is permissioned where the design assumes it, and that a rogue solver still cannot violate signed limits.
+
+### `Dutch-auction / decaying-price order fill + filler front-running`
+- **Risk:** UniswapX/Fusion orders decay from a start to an end price; a filler executing at the worst-for-user allowed point, or front-running/sandwiching the fill, extracts the decay spread. An order with no effective minimum (end price ≈ 0) or an unbounded `deadline` is guaranteed value loss (MEV) analogous to `minOut = 0`.
+- **Verify:** Confirm decaying orders have a non-degenerate end price / effective `minBuy` and a bounded `deadline`/`validTo`; confirm the fill price is checked against the decay curve at the fill block; assess exclusivity/private-mempool assumptions and that a non-exclusive filler cannot fill below the user's floor.
+
+## cross-chain-messaging
+
+> App-level integrations on generic cross-chain messaging (LayerZero, CCIP, Wormhole, Axelar) — complements the hand-rolled lock/mint items in the `bridge` section. **TRON runs a live LayerZero endpoint, so LZ OApps on TVM are in scope.** For CCIP / Wormhole / Axelar, **verify the specific protocol is actually deployed on the TVM target before assuming** — do not presume parity with EVM deployments.
+
+### `lzReceive(uint16,bytes,uint64,bytes) [LZ v1] / _lzReceive(Origin,...) [OApp v2] — endpoint + peer/trustedRemote auth`
+- **Risk:** The single most common LZ-integration bug: the receive entrypoint doesn't assert BOTH that `msg.sender` is the LayerZero endpoint AND that the source `(srcChainId/srcEid, srcAddress/sender)` matches the configured `trustedRemote`/`getPeer`. Missing either check lets anyone deliver a forged message and mint/unlock/execute at will. Applies on TRON (live LZ endpoint).
+- **Verify:** Confirm `msg.sender == endpoint` (LzApp `lzEndpoint` / OAppReceiver check); confirm the source path is allowlisted (`trustedRemote[srcChainId] == srcAddress` in v1, `peers[srcEid] == _origin.sender` in v2); confirm nonce ordering/replay handling (v1 ordered nonces vs v2 configurable) and that blocked/stored payloads can't be force-retried to double-execute.
+
+### `ccipReceive(Client.Any2EVMMessage) [Chainlink CCIP] — router + source chain/sender allowlist`
+- **Risk:** `ccipReceive` must be callable only by the CCIP router, and the app must allowlist `message.sourceChainSelector` and decode+allowlist the ABI-encoded `sender`. Trusting any router caller or any source lets a spoofed message drive privileged actions.
+- **Verify:** Confirm `onlyRouter` (CCIPReceiver) is present; confirm `sourceChainSelector` is allowlisted and the decoded `sender` is checked against the expected remote; confirm `extraArgs` gas limits and that a failed/manually-executed message can't be replayed; confirm token/amount handling on `destTokenAmounts`.
+
+### `receiveWormholeMessages / parseAndVerifyVM VAA — emitter binding + consumed hash`
+- **Risk:** A VAA is only trustworthy after guardian verification AND after checking WHO emitted it. Consuming a VAA without validating `emitterChainId` + `emitterAddress` against the registered remote, or without recording `vm.hash` as processed, allows spoofed-emitter messages and VAA replay (double-execute across calls/chains). Guardian-set index and `valid` bool must be checked.
+- **Verify:** Confirm `(valid, )` from `parseAndVerifyVM` is checked and reverts on false; confirm `emitterChainId`+`emitterAddress` match the registered emitter; confirm `vm.hash` recorded in a consumed mapping set BEFORE effects (replay guard); confirm the guardian-set index is current and `payload` decoding is unambiguous.
+
+### `_execute(commandId,sourceChain,sourceAddress,payload) [Axelar AxelarExecutable]`
+- **Risk:** The public `execute` validates via `gateway.validateContractCall`, but the app's `_execute` override must still check `sourceChain` + `sourceAddress` against the trusted remote — otherwise any origin that can emit through the gateway can invoke privileged logic.
+- **Verify:** Confirm `_execute`/`_executeWithToken` compare `sourceChain` and `sourceAddress` to the allowlisted remote (string comparison, case-normalized); confirm `commandId` replay is prevented by the gateway/app; confirm token amounts on `_executeWithToken` match the message.
+
+### `finality / block-confirmations / optimistic challenge window before crediting`
+- **Risk:** Crediting a destination action before the source event is FINAL invites reorg loss: the source deposit is reorged out while the destination already minted/released (unbacked supply). LayerZero DVN block-confirmation configs set too low, or optimistic bridges (Nomad/Across-class) whose challenge/fraud window is bypassed or set to zero, both realize this. Probabilistic-finality source chains need conservative confirmations.
+- **Verify:** Confirm the app's messaging config requires adequate source confirmations / a real challenge window before the destination acts; confirm no path credits on an unconfirmed or default/zero root (Nomad); confirm reorg exposure is modeled for the specific source chain's finality; on LZ confirm the DVN/library security stack and block-confirmation count are explicitly set, not left at a permissive default.
+
+### `message replay guard: sequence/nonce consumed + emitter/chain bound into the hash`
+- **Risk:** Cross-protocol constant: a message must be executed once. Missing a processed-marker, or a marker not bound to `(sourceChain, emitter/sender, sequence/nonce)`, permits replay on the same chain or across destination chains for one source event.
+- **Verify:** Confirm each message's unique id (`vm.hash` / LZ nonce / CCIP messageId / Axelar commandId) is recorded in a processed mapping, checked-and-set atomically before external effects; confirm `destinationChainId` and emitter/sender are bound so the same message can't be replayed on a sibling deployment.
+
+## modular-proxy-diamond
+
+> EIP-2535 diamonds/facets, EIP-1167 minimal clones, beacon proxies, and ERC-7201 namespaced storage. TVM is EVM-bytecode-compatible so these patterns can deploy on TRON, but **CREATE2 uses a `0x41` prefix on TVM** — any counterfactual clone/facet/factory address precompute must use the TVM formula (see `tvm-native`), and `delegatecall` drops `calltokenvalue`/`calltokenid`, so facet code doing TRC-10 accounting reads them as zero.
+
+### `diamondCut(FacetCut[],address _init,bytes _calldata) [EIP-2535]`
+- **Risk:** The upgrade primitive for a diamond. Two critical bugs: (1) missing/weak auth (`LibDiamond.enforceIsContractOwner`) lets anyone add/replace/remove facets — total compromise; (2) the `_init` address is `delegatecall`ed with `_calldata` during the cut, so an attacker-influenced `_init` (or an unprotected cut) executes arbitrary code in the diamond's storage context — a delegatecall backdoor equivalent to arbitrary owner overwrite.
+- **Verify:** Confirm `diamondCut` is owner/governance/timelock-gated; confirm `_init` is restricted to trusted, known initializer contracts (not caller-supplied); confirm Add/Replace/Remove semantics are enforced (can't Replace a selector to a malicious facet without auth); confirm the cut emits `DiamondCut` for monitoring.
+
+### `facet selector collision / loupe uniqueness / selectorToFacet mapping`
+- **Risk:** Each 4-byte selector must map to exactly one facet. Adding a selector that already exists (or two facets exposing the same selector) either reverts, silently shadows a function, or — if mishandled — routes a privileged call to the wrong facet. Removing a selector still referenced elsewhere bricks a code path.
+- **Verify:** Confirm `diamondCut` rejects Add of an existing selector and Replace/Remove of a non-existent one; confirm loupe (`facets()/facetFunctionSelectors()`) shows no duplicate selectors; run a selector-clash check across all facets including inherited/standard interfaces (ERC-165, ownership).
+
+### `diamond shared storage: AppStorage / Diamond Storage (keccak slot) across facets`
+- **Risk:** All facets share the diamond's storage. With **AppStorage** (a struct every facet declares first) any facet that adds/reorders struct fields, or declares extra sequential state variables, collides with sibling facets and corrupts state. With **Diamond Storage** (per-library keccak256 slot structs), a duplicated/wrong position string collides two modules onto the same slot.
+- **Verify:** Confirm facets use a disciplined storage pattern (AppStorage-only-and-append, or Diamond Storage with unique, stable position strings); confirm no facet declares ad-hoc sequential state variables that land in slot 0..n; diff struct layout across facet upgrades exactly as with proxy `__gap`.
+
+### `minimal clone (EIP-1167) initialize() front-run / uninitialized implementation`
+- **Risk:** Clones `delegatecall` a fixed implementation and have their own (empty) storage, so each clone must be initialized. If the factory deploys the clone and initializes it in a SEPARATE tx, an attacker front-runs `initialize()` to seize ownership (init-takeover). The shared implementation left directly callable/uninitialized is a secondary surface.
+- **Verify:** Confirm clone deployment and initialization are atomic (factory initializes in the same tx / constructor-equivalent) or init is authenticated to the intended owner; confirm `initializer`/`_disableInitializers` semantics on the implementation; confirm a front-run `initialize` on a fresh clone cannot set attacker ownership.
+
+### `UpgradeableBeacon.upgradeTo / BeaconProxy — one beacon upgrades ALL proxies`
+- **Risk:** A beacon holds the single implementation address that every `BeaconProxy` reads; `upgradeTo` swaps logic for all of them at once. A compromised/EOA beacon owner instantly hijacks or bricks the entire proxy fleet; upgrading to an address with no code or an incompatible layout corrupts all.
+- **Verify:** Confirm `upgradeTo` is gated by a timelock/multisig, not an EOA; confirm the new implementation is non-zero, has code, and is storage-layout-compatible with the old; confirm the blast radius (all proxies) is acceptable and monitored; confirm the beacon address stored in proxies is immutable/trusted. (get-source.sh resolves the EIP-1967 beacon slot to fetch the impl.)
+
+### `ERC-7201 namespaced storage per facet/module (@custom:storage-location erc7201:...)`
+- **Risk:** In diamonds/modular systems each facet/module should isolate state in its own ERC-7201 namespace (`keccak256(abi.encode(uint256(keccak256("id")) - 1)) & ~0xff`). A duplicated namespace string across two facets, a hand-written slot that doesn't match its `@custom:storage-location`, or mixing sequential and namespaced state re-introduces cross-facet collisions the old `__gap` mental model won't catch. (See the `proxy-upgrade` ERC-7201 entry for the base check.)
+- **Verify:** Recompute each `erc7201:` slot from its label and confirm the facet reads/writes there; confirm namespaces are unique per module and stable across upgrades; confirm no facet mixes legacy sequential state into a colliding slot.
 
 
 ## tvm-native
