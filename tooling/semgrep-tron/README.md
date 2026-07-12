@@ -24,6 +24,13 @@ Severity maps to Semgrep's scale: **INFO** = LOW/inventory hotspot, **WARNING** 
 | `tron-native-value-decimals` | WARNING | `msg.value` combined with `1e18`/`ether` in one expression | Native TRON value is **SUN** (1 TRX = 1e6); 1e18 on a native path misprices by 1e12×. **Plain WAD/TRC-20 18-decimal math is NOT flagged** (needs the `msg.value` co-occurrence). Semgrep Solidity has no dataflow, so the cross-statement form (`x = msg.value; … x * 1e18`) is NOT caught — grep native paths by hand too. |
 | `tron-weak-randomness-tvm-constants` | WARNING | `block.difficulty` / `block.prevrandao` / `block.gaslimit` | These are **constants** on the TVM, not per-block entropy — trivially predictable if used for randomness or as a guard. |
 | `tron-create2-eth-prefix` | WARNING | `bytes1(0xff)` / `hex"ff"` | TVM computes CREATE2 addresses with a **`0x41`** prefix, not Ethereum's `0xff`; a hand-rolled `0xff` preimage predicts the wrong address. |
+| `tron-native-send-stipend` | WARNING | `$X.send(…)` / `payable($X).transfer(…)` | The EVM 2300-gas stipend assumption differs under TVM's Energy model; verify the recipient path. |
+| `tron-tx-origin-auth` | WARNING | `tx.origin == $X` (auth) | Phishing-vulnerable; post-EIP-7702 also stops distinguishing EOA from contract. |
+| `tron-delegatecall-usage` | WARNING | `$X.delegatecall(…)` | Arbitrary/trusted target check; TVM drops `calltokenvalue`/`calltokenid` in delegated code. |
+| `tron-ecrecover-usage` | INFO | `ecrecover(…)` | Verify zero-addr check + malleability + 20-vs-21-byte identity reconciliation. |
+| `tron-selfdestruct-usage` | INFO | `selfdestruct(…)` / `suicide(…)` | Post-EIP-6780 semantics on TRON (param #94) — verify brick/force-feed assumptions. |
+| `tron-lowlevel-call-value` | INFO | `$X.call{value:}(…)` | Verify the boolean return is checked + reentrancy guarded. |
+| `tron-create2-new-salt` | INFO | `new C{salt:…}(…)` | CREATE2 deploy — TVM `0x41`-prefix address derivation, not `0xff`. |
 
 ## Discipline — a match is a POINTER, not a finding
 
@@ -54,7 +61,7 @@ math with no `msg.value` in scope, which must NOT fire). Validate + smoke-test a
 
 ```bash
 semgrep --validate --config tron-tvm-native.yml
-semgrep --config tron-tvm-native.yml tron-tvm-native.sol   # 10 matches (7 rules), none in the safe contract
+semgrep --config tron-tvm-native.yml tron-tvm-native.sol   # 18 matches (14 rules), none in the safe contract
 ```
 
 (`semgrep --test` is the intended harness but crashes in 1.168.0 on the path-matching step;

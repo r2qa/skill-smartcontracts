@@ -66,3 +66,38 @@ contract PlainErc20Like {
         return (assets * 1e18) / rate;
     }
 }
+
+// Coverage for the low-level / EVM-assumption rules (batch 2). Each construct must fire.
+contract TronNativeOps {
+    function sends(address payable to, uint256 v) external {
+        // ruleid: tron-native-send-stipend
+        to.send(v);
+        // ruleid: tron-native-send-stipend
+        payable(to).transfer(v);
+    }
+    function auth() external view returns (bool) {
+        // ruleid: tron-tx-origin-auth
+        return tx.origin == msg.sender;
+    }
+    function rec(bytes32 h, uint8 vv, bytes32 r, bytes32 s) external pure returns (address) {
+        // ruleid: tron-ecrecover-usage
+        return ecrecover(h, vv, r, s);
+    }
+    function kill() external {
+        // ruleid: tron-selfdestruct-usage
+        selfdestruct(payable(msg.sender));
+    }
+    function dc(address t, bytes calldata d) external {
+        // ruleid: tron-delegatecall-usage
+        t.delegatecall(d);
+    }
+    function cv(address t) external payable {
+        // ruleid: tron-lowlevel-call-value
+        t.call{value: msg.value}("");
+    }
+    function mk(bytes32 salt) external returns (address) {
+        // ruleid: tron-create2-new-salt
+        TronNativeOps x = new TronNativeOps{salt: salt}();
+        return address(x);
+    }
+}

@@ -139,3 +139,78 @@ rules:
     pattern-either:
       - pattern: bytes1(0xff)
       - pattern: hex"ff"
+
+  - id: tron-native-send-stipend
+    languages: [solidity]
+    severity: WARNING
+    message: >
+      `.send()`/`.transfer()` native value send assumes the EVM 2300-gas stipend. TVM meters
+      Energy differently — the stipend assumption and revert-on-failure behavior may differ.
+      VERIFY the recipient path and prefer a checked low-level call with reentrancy guards.
+    metadata: { category: security, tron: true, confidence: LOW, subcategory: [audit] }
+    pattern-either:
+      - pattern: $X.send(...)
+      - pattern: payable($X).transfer(...)
+
+  - id: tron-tx-origin-auth
+    languages: [solidity]
+    severity: WARNING
+    message: >
+      Authorization via tx.origin is phishing-vulnerable and, post-EIP-7702, no longer
+      distinguishes an EOA from contract code. Use msg.sender.
+    metadata: { category: security, tron: true, confidence: MEDIUM, subcategory: [audit] }
+    pattern-either:
+      - pattern: tx.origin == $X
+      - pattern: $X == tx.origin
+      - pattern: require(tx.origin == $X)
+
+  - id: tron-ecrecover-usage
+    languages: [solidity]
+    severity: INFO
+    message: >
+      ecrecover in scope. VERIFY the result is checked against address(0) (invalid sig),
+      signature malleability (low-s / v) is handled, and on TVM the 20-byte recovered word is
+      reconciled with 21-byte 0x41 on-chain identity + correct chainid (0x2b6653dc).
+    metadata: { category: security, tron: true, confidence: LOW, subcategory: [audit] }
+    pattern: ecrecover(...)
+
+  - id: tron-selfdestruct-usage
+    languages: [solidity]
+    severity: INFO
+    message: >
+      selfdestruct/suicide in scope. TRON adopted EIP-6780 (mainnet 2026-04-10, param #94):
+      post-creation self-destruct no longer deletes code/storage, only transfers balance.
+      VERIFY the brick/force-feed assumptions against the target chain's #94 state.
+    metadata: { category: security, tron: true, confidence: LOW, subcategory: [audit] }
+    pattern-either:
+      - pattern: selfdestruct(...)
+      - pattern: suicide(...)
+
+  - id: tron-delegatecall-usage
+    languages: [solidity]
+    severity: WARNING
+    message: >
+      delegatecall in scope. VERIFY the target is immutable/trusted (arbitrary target = total
+      compromise) and note TVM drops calltokenvalue/calltokenid — TRC-10 accounting in
+      delegated code reads them as zero.
+    metadata: { category: security, tron: true, confidence: MEDIUM, subcategory: [audit] }
+    pattern: $X.delegatecall(...)
+
+  - id: tron-lowlevel-call-value
+    languages: [solidity]
+    severity: INFO
+    message: >
+      Low-level `.call{value:}` in scope. VERIFY the boolean return is checked, reentrancy is
+      guarded (CEI), and the Energy/gas forwarded is intentional on TVM.
+    metadata: { category: security, tron: true, confidence: LOW, subcategory: [audit] }
+    pattern: "$X.call{value: $V}(...)"
+
+  - id: tron-create2-new-salt
+    languages: [solidity]
+    severity: INFO
+    message: >
+      CREATE2 deployment (new C{salt:...}). TVM derives the address with a 0x41 prefix, NOT
+      Ethereum's 0xff — any off-chain/precomputed counterfactual address must use the TVM
+      formula or funds go to the wrong address.
+    metadata: { category: security, tron: true, confidence: LOW, subcategory: [audit] }
+    pattern: "new $C{salt: $S}(...)"
