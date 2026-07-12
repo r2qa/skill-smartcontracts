@@ -401,8 +401,20 @@ log "Verification summary"
 # =============================================================================
 verify() { # name command...
   local name="$1"; shift
-  if out="$("$@" 2>&1 | head -1)"; then printf '  %-18s PASS  %s\n' "$name" "$out"
-  else printf '  %-18s FAIL\n' "$name"; FAILURES+=("verify:$name"); fi
+  local full rc line
+  # capture the WHOLE output first — piping straight to `head` under `set -o pipefail`
+  # SIGPIPEs a multi-line/slow producer (e.g. `myth version` prints a pkg_resources
+  # warning before the version), making the pipeline exit 141 and falsely FAIL a tool
+  # that is actually installed.
+  full="$("$@" 2>&1)"; rc=$?
+  if [ "$rc" -eq 0 ]; then
+    # show the first meaningful line, skipping deprecation/warning noise
+    line="$(printf '%s\n' "$full" | grep -viE 'warning|pkg_resources|deprecat' | head -1)"
+    [ -z "$line" ] && line="$(printf '%s\n' "$full" | head -1)"
+    printf '  %-18s PASS  %s\n' "$name" "$line"
+  else
+    printf '  %-18s FAIL\n' "$name"; FAILURES+=("verify:$name")
+  fi
 }
 verify "solc-select"    solc-select versions
 verify "solc"           solc --version
